@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS credit_transactions;
+DROP TABLE IF EXISTS invoices;
+DROP TABLE IF EXISTS credit_accounts;
+ALTER TABLE orders DROP COLUMN IF EXISTS credits_used_cents;
+ALTER TABLE orders DROP COLUMN IF EXISTS payment_method;
+ALTER TABLE orders DROP COLUMN IF EXISTS publication_url;
+ALTER TABLE orders DROP COLUMN IF EXISTS profile_id;
+ALTER TABLE plans  DROP COLUMN IF EXISTS target_type;
+ALTER TABLE plans  DROP COLUMN IF EXISTS platform;
+DROP TABLE IF EXISTS profiles;

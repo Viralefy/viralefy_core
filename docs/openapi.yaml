@@ -1,0 +1,58 @@
+openapi: 3.1.0
+info:
+  title: Viralefy API
+  version: 1.0.0
+  description: API de venda de seguidores
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Liveness
+  /v1/plans:
+    get:
+      summary: Listar planos ativos (público)
+      responses:
+        '200':
+          description: OK
+  /v1/checkout:
+    post:
+      summary: Checkout com cadastro
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id, email, name, instagram, password]
+              properties:
+                plan_id: { type: string }
+                email: { type: string, format: email }
+                name: { type: string }
+                instagram: { type: string }
+                password: { type: string, minLength: 8 }
+      responses:
+        '201':
+          description: Pedido criado
+  /v1/auth/login:
+    post:
+      summary: Login admin
+  /v1/admin/plans:
+    get:
+      summary: Listar todos os planos
+      security: [{ bearerAuth: [] }]
+    post:
+      summary: Criar plano
+      security: [{ bearerAuth: [] }]
+  /v1/admin/gateways:
+    get:
+      summary: Listar gateways
+      security: [{ bearerAuth: [] }]
+    post:
+      summary: Criar gateway
+      security: [{ bearerAuth: [] }]
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

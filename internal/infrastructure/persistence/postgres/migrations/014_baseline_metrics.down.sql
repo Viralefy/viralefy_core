@@ -1,0 +1,10 @@
+BEGIN;
+DROP INDEX IF EXISTS idx_orders_delivery_captured;
+DROP INDEX IF EXISTS idx_orders_baseline_captured;
+ALTER TABLE orders DROP COLUMN IF EXISTS delivery_source;
+ALTER TABLE orders DROP COLUMN IF EXISTS delivery_captured_at;
+ALTER TABLE orders DROP COLUMN IF EXISTS delivery_metrics;
+ALTER TABLE orders DROP COLUMN IF EXISTS baseline_source;
+ALTER TABLE orders DROP COLUMN IF EXISTS baseline_captured_at;
+ALTER TABLE orders DROP COLUMN IF EXISTS baseline_metrics;
+COMMIT;

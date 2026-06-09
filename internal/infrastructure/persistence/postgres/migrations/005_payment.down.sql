@@ -1,0 +1,2 @@
+ALTER TABLE orders DROP COLUMN IF EXISTS payment_extra;
+ALTER TABLE orders DROP COLUMN IF EXISTS payment_url;

@@ -1,0 +1,4 @@
+BEGIN;
+DROP TABLE IF EXISTS email_reputation;
+DROP TABLE IF EXISTS email_events;
+COMMIT;

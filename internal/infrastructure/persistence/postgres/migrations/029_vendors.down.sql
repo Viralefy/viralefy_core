@@ -1,0 +1,7 @@
+BEGIN;
+
+DROP INDEX IF EXISTS idx_plans_vendor;
+ALTER TABLE plans DROP COLUMN IF EXISTS vendor_id;
+DROP TABLE IF EXISTS vendors;
+
+COMMIT;

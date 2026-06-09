@@ -1,0 +1,9 @@
+BEGIN;
+
+ALTER TABLE orders DROP COLUMN IF EXISTS tax_usd_cents;
+ALTER TABLE orders DROP COLUMN IF EXISTS tax_rate_pct;
+ALTER TABLE orders DROP COLUMN IF EXISTS tax_country_code;
+
+DROP TABLE IF EXISTS tax_rates;
+
+COMMIT;
