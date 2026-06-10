@@ -20,6 +20,13 @@ func NewUserEventRepo(db *DB) *UserEventRepo {
 }
 
 // Record grava um evento granular. payload/utm são JSONB nullable.
+//
+// PII gate (LGPD Art. 8 §3): quando ev.AnalyticsConsent é não-nil E false,
+// IP+UA são gravados como NULL — preservamos contagem de eventos pra
+// métricas de produto, mas sem dado pessoal. Quando o flag é nil (legacy
+// path, ou caller que esqueceu de setar), o comportamento padrão é
+// CONSERVADOR: também NULLify IP/UA. Só grava IP/UA quando explicitamente
+// true.
 func (r *UserEventRepo) Record(ctx context.Context, ev domain.UserEvent) error {
 	var payloadJSON, utmJSON []byte
 	if ev.Payload != nil {
@@ -43,12 +50,30 @@ func (r *UserEventRepo) Record(ctx context.Context, ev domain.UserEvent) error {
 	} else {
 		userIDArg = nil
 	}
+	// Privacy-by-default: IP/UA só vão pro DB se consent EXPLICITAMENTE true.
+	consentOK := ev.AnalyticsConsent != nil && *ev.AnalyticsConsent
+	var ipArg, uaArg any
+	if consentOK {
+		ipArg = ev.IP
+		uaArg = ev.UserAgent
+	} else {
+		ipArg = nil
+		uaArg = nil
+	}
+	// analytics_consent é nullable BOOLEAN. NULL = pre-feature legacy;
+	// false = consent negado; true = consent dado.
+	var consentArg any
+	if ev.AnalyticsConsent != nil {
+		consentArg = *ev.AnalyticsConsent
+	} else {
+		consentArg = nil
+	}
 	_, err := r.db.pool.Exec(ctx, `
 		INSERT INTO user_events
-			(id, visitor_id, user_id, event_type, path, referrer, payload, utm, ip, user_agent)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			(id, visitor_id, user_id, event_type, path, referrer, payload, utm, ip, user_agent, analytics_consent)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		ev.ID, ev.VisitorID, userIDArg, ev.EventType, ev.Path, ev.Referrer,
-		nullableJSON(payloadJSON), nullableJSON(utmJSON), ev.IP, ev.UserAgent,
+		nullableJSON(payloadJSON), nullableJSON(utmJSON), ipArg, uaArg, consentArg,
 	)
 	return err
 }
@@ -57,10 +82,11 @@ func scanUserEvent(row pgx.Row) (*domain.UserEvent, error) {
 	var ev domain.UserEvent
 	var userID *string
 	var path, referrer, ip, ua *string
+	var consent *bool
 	var payloadJSON, utmJSON []byte
 	if err := row.Scan(
 		&ev.ID, &ev.VisitorID, &userID, &ev.EventType,
-		&path, &referrer, &payloadJSON, &utmJSON, &ip, &ua, &ev.OccurredAt,
+		&path, &referrer, &payloadJSON, &utmJSON, &ip, &ua, &consent, &ev.OccurredAt,
 	); err != nil {
 		return nil, err
 	}
@@ -79,6 +105,7 @@ func scanUserEvent(row pgx.Row) (*domain.UserEvent, error) {
 	if ua != nil {
 		ev.UserAgent = *ua
 	}
+	ev.AnalyticsConsent = consent
 	if len(payloadJSON) > 0 {
 		_ = json.Unmarshal(payloadJSON, &ev.Payload)
 	}
@@ -90,7 +117,7 @@ func scanUserEvent(row pgx.Row) (*domain.UserEvent, error) {
 
 const userEventSelect = `
 	SELECT id, visitor_id, user_id, event_type, path, referrer,
-	       payload, utm, ip, user_agent, occurred_at
+	       payload, utm, ip, user_agent, analytics_consent, occurred_at
 	  FROM user_events`
 
 func (r *UserEventRepo) ListByVisitor(ctx context.Context, visitorID string, limit int) ([]domain.UserEvent, error) {

@@ -22,7 +22,38 @@ type UserEvent struct {
 	UTM        map[string]any `json:"utm,omitempty"`
 	IP         string         `json:"ip,omitempty"`
 	UserAgent  string         `json:"user_agent,omitempty"`
-	OccurredAt time.Time      `json:"occurred_at"`
+	// AnalyticsConsent reflete o header `X-Analytics-Consent` no momento
+	// do INSERT. Quando false, o repo NULLifica IP+UA — mas mantém o
+	// próprio flag pra auditoria. Pointer pra distinguir "desconhecido"
+	// (legacy/NULL) de "false" explícito.
+	AnalyticsConsent *bool     `json:"analytics_consent,omitempty"`
+	OccurredAt       time.Time `json:"occurred_at"`
+}
+
+// UserConsent é um registro append-only de decisão de consent. Grava o
+// estado completo dos toggles + origem (qual botão o usuário clicou) +
+// IP/UA — esses dois últimos são gravados SEMPRE porque a comprovação
+// do consentimento (Art. 8 §6 LGPD) é base legal própria.
+type UserConsent struct {
+	ID          string    `json:"id"`
+	UserID      string    `json:"user_id,omitempty"`
+	VisitorID   string    `json:"visitor_id,omitempty"`
+	Version     int       `json:"version"`
+	Necessary   bool      `json:"necessary"`
+	Preferences bool      `json:"preferences"`
+	Analytics   bool      `json:"analytics"`
+	Marketing   bool      `json:"marketing"`
+	Source      string    `json:"source"` // accept_all|essential_only|custom|reset
+	IP          string    `json:"ip,omitempty"`
+	UserAgent   string    `json:"user_agent,omitempty"`
+	RecordedAt  time.Time `json:"recorded_at"`
+}
+
+// UserConsentRepository — porta de saída pra persistência do audit log
+// de consent. Append-only no app layer: nada de UPDATE/DELETE.
+type UserConsentRepository interface {
+	Record(ctx context.Context, c UserConsent) error
+	ListByUser(ctx context.Context, userID string, limit int) ([]UserConsent, error)
 }
 
 // UserJourney é o agregado 1:1 por user. landing_* é first-touch

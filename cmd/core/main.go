@@ -126,6 +126,7 @@ func main() {
 	vendorRepo := postgres.NewVendorRepo(db)
 	apiKeyRepo := postgres.NewAPIKeyRepo(db)
 	userEventRepo := postgres.NewUserEventRepo(db)
+	userConsentRepo := postgres.NewUserConsentRepo(db)
 	ticketRepo := postgres.NewTicketRepo(db)
 	profileRepo := postgres.NewProfileRepo(db)
 	creditRepo := postgres.NewCreditRepo(db)
@@ -222,6 +223,7 @@ func main() {
 	vendorSvc := application.NewVendorService(vendorRepo)
 	apiKeySvc := application.NewAPIKeyService(apiKeyRepo)
 	userEventSvc := application.NewUserEventService(userEventRepo)
+	userConsentSvc := application.NewUserConsentService(userConsentRepo)
 	gwSvc := application.NewGatewayService(gwRepo)
 	// JWT RS256 — carrega ou gera RSA privada. Tokens novos signam RS256;
 	// ValidateAdmin/ValidateUser ainda aceitam HS256 antigos por compat (7d).
@@ -420,6 +422,7 @@ func main() {
 		Vendors:         vendorSvc,
 		APIKeys:         apiKeySvc,
 		Events:          userEventSvc,
+		Consent:         userConsentSvc,
 		Email:           emailSender,
 		Storage:         buildStorage(cfg.Storage, logger),
 		AdminTwoFA:      adminTwoFA,

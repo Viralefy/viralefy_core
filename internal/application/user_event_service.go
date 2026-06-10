@@ -55,6 +55,10 @@ type EventInput struct {
 	UTM       map[string]any
 	IP        string
 	UserAgent string
+	// AnalyticsConsent: pointer pra distinguir "consent ausente" (nil — caller
+	// não passou header, conservador: NULLify) de "consent negado" (false).
+	// O handler /v1/track popula a partir do header X-Analytics-Consent.
+	AnalyticsConsent *bool
 }
 
 // RecordEvent grava o evento + bumpa user_journeys.
@@ -83,16 +87,17 @@ func (s *UserEventService) RecordEvent(ctx context.Context, in EventInput) error
 		id = uuid.New().String()
 	}
 	ev := domain.UserEvent{
-		ID:        id,
-		VisitorID: in.VisitorID,
-		UserID:    in.UserID,
-		EventType: in.EventType,
-		Path:      in.Path,
-		Referrer:  in.Referrer,
-		Payload:   in.Payload,
-		UTM:       in.UTM,
-		IP:        in.IP,
-		UserAgent: in.UserAgent,
+		ID:               id,
+		VisitorID:        in.VisitorID,
+		UserID:           in.UserID,
+		EventType:        in.EventType,
+		Path:             in.Path,
+		Referrer:         in.Referrer,
+		Payload:          in.Payload,
+		UTM:              in.UTM,
+		IP:               in.IP,
+		UserAgent:        in.UserAgent,
+		AnalyticsConsent: in.AnalyticsConsent,
 	}
 	if err := s.repo.Record(ctx, ev); err != nil {
 		logger.Warn("user_event insert failed (best-effort)", "err", err.Error())

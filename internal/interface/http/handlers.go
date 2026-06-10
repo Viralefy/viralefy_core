@@ -64,6 +64,10 @@ type Handlers struct {
 	Vendors       *application.VendorService
 	APIKeys       *application.APIKeyService
 	Events        *application.UserEventService
+	// Consent — audit log de decisões de cookie consent (LGPD Art. 8 §6).
+	// Quando nil, POST /v1/me/consent vira 503 (best-effort) e o backend
+	// nem expõe a rota (router.go filtra).
+	Consent       *application.UserConsentService
 	// Email sender — usado por handlers que precisam disparar transactional
 	// email fora do fluxo de PaymentReceiver (ex.: AdminProofDecision quando
 	// admin rejeita o comprovante e o cliente precisa ser avisado pra
@@ -1974,6 +1978,28 @@ func (h *Handlers) MeCancelDeletion(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// MeGetDeletion devolve o estado corrente do pedido de exclusão (se
+// houver) + listas de categorias deletadas vs retidas pra transparência
+// LGPD Art. 9. Retorna 200 sempre — status="none" quando o usuário
+// nunca pediu.
+func (h *Handlers) MeGetDeletion(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	if h.UserData == nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	st, err := h.UserData.GetDeletionStatus(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 // PublicJWKS expõe a chave pública RSA (Fase 4.1) em
 // /.well-known/jwks.json — consumidores externos (verificadores
 // stateless) podem validar tokens RS256 sem chamar a API. Lê a chave
@@ -2348,16 +2374,22 @@ func (h *Handlers) PublicTrackEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	// user_id é opcional — só populado quando o request veio com JWT user.
 	uid := userIDFromContext(r.Context())
+	// LGPD Art. 8 §3: IP/UA só vão pro DB se o front enviar
+	// X-Analytics-Consent: 1 (consent explícito). "0" ou ausente → repo
+	// NULLifica os dois campos. Mantemos o flag (true/false) na própria
+	// row pra auditoria.
+	consentVal := readAnalyticsConsentHeader(r)
 	in := application.EventInput{
-		VisitorID: body.VisitorID,
-		UserID:    uid,
-		EventType: body.EventType,
-		Path:      body.Path,
-		Referrer:  body.Referrer,
-		Payload:   body.Payload,
-		UTM:       body.UTM,
-		IP:        clientIP(r),
-		UserAgent: r.UserAgent(),
+		VisitorID:        body.VisitorID,
+		UserID:           uid,
+		EventType:        body.EventType,
+		Path:             body.Path,
+		Referrer:         body.Referrer,
+		Payload:          body.Payload,
+		UTM:              body.UTM,
+		IP:               clientIP(r),
+		UserAgent:        r.UserAgent(),
+		AnalyticsConsent: consentVal,
 	}
 	// RecordEvent é best-effort — não propaga erros (a não ser validação).
 	if err := h.Events.RecordEvent(r.Context(), in); err != nil {
@@ -2398,6 +2430,100 @@ func (h *Handlers) MeJourney(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// readAnalyticsConsentHeader — lê o header X-Analytics-Consent ("1" / "0").
+// Retorna *bool: nil quando o header é ausente/inválido (caller decide o
+// que fazer — o repo é conservador e NULLifica IP/UA).
+//
+// LGPD Art. 8 §3: o front DEVE mandar "1" só quando o usuário aceitou
+// analytics. Ausência do header = trate como negação (privacy-by-default).
+func readAnalyticsConsentHeader(r *http.Request) *bool {
+	v := strings.TrimSpace(r.Header.Get("X-Analytics-Consent"))
+	if v == "" {
+		f := false
+		return &f
+	}
+	switch v {
+	case "1", "true", "TRUE":
+		t := true
+		return &t
+	case "0", "false", "FALSE":
+		f := false
+		return &f
+	default:
+		// Valor estranho — log warn (mas só num lugar com contexto) e
+		// trate como denied.
+		f := false
+		return &f
+	}
+}
+
+// PublicRecordConsent — POST /v1/me/consent
+//
+// Append-only audit log da decisão de consent de cookies. Aceita
+// anônimo (sem JWT — visitor_id opcional no body) ou autenticado
+// (user_id derivado do JWT). IP+UA são sempre gravados aqui porque a
+// base legal é a própria comprovação do consentimento (Art. 8 §6 LGPD).
+//
+// Body:
+//   {
+//     version: number,
+//     necessary: boolean,
+//     preferences: boolean,
+//     analytics: boolean,
+//     marketing: boolean,
+//     timestamp: string (ISO 8601),
+//     source: "accept_all" | "essential_only" | "custom" | "reset",
+//     visitor_id?: string
+//   }
+//
+// Best-effort: erros internos viram 204 (não quebra UX); validação
+// retorna 400.
+func (h *Handlers) PublicRecordConsent(w http.ResponseWriter, r *http.Request) {
+	if h.Consent == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10) // 4KB — payload é pequeno
+	var body struct {
+		Version     int    `json:"version"`
+		Necessary   bool   `json:"necessary"`
+		Preferences bool   `json:"preferences"`
+		Analytics   bool   `json:"analytics"`
+		Marketing   bool   `json:"marketing"`
+		Timestamp   string `json:"timestamp"`
+		Source      string `json:"source"`
+		VisitorID   string `json:"visitor_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	uid := userIDFromContext(r.Context())
+	ts := time.Time{}
+	if body.Timestamp != "" {
+		if parsed, err := time.Parse(time.RFC3339, body.Timestamp); err == nil {
+			ts = parsed
+		}
+	}
+	in := application.ConsentInput{
+		UserID:      uid,
+		VisitorID:   body.VisitorID,
+		Version:     body.Version,
+		Necessary:   body.Necessary,
+		Preferences: body.Preferences,
+		Analytics:   body.Analytics,
+		Marketing:   body.Marketing,
+		Source:      body.Source,
+		IP:          clientIP(r),
+		UserAgent:   r.UserAgent(),
+		Timestamp:   ts,
+	}
+	if err := h.Consent.Record(r.Context(), in); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
 // PublicListPaymentMethods — GET /v1/plans/{id}/payment-methods
 // Catálogo de métodos de pagamento disponíveis para um plano específico,

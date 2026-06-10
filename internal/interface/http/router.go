@@ -80,6 +80,10 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 		r.With(mutationLimiter).Post("/ab/assign", h.PublicABAssign)
 		r.With(mutationLimiter).Post("/ab/track", h.PublicABTrack)
 		r.With(mutationLimiter).Post("/track", h.PublicTrackEvent)
+		// Cookie consent audit log (LGPD Art. 8 §6). Aceita anônimo —
+		// optionalUserAuth correlaciona com user_id quando o JWT estiver
+		// presente; sem token o handler grava só visitor_id.
+		r.With(mutationLimiter, optionalUserAuth).Post("/me/consent", h.PublicRecordConsent)
 		r.Get("/tax-rates", h.PublicTaxRates)
 		// Checkout aceita token opcional — quando logado, usa profile_id e
 		// pode pagar com créditos. Sem token, cria conta na hora.
@@ -142,6 +146,7 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.Put("/notif-prefs", h.MeUpdateNotifPrefs)
 
 			r.Get("/data/export", h.MeExportData)
+			r.Get("/data/deletion", h.MeGetDeletion)
 			r.Post("/data/deletion", h.MeRequestDeletion)
 			r.Delete("/data/deletion", h.MeCancelDeletion)
 
