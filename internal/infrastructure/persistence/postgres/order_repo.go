@@ -24,6 +24,7 @@ const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	COALESCE(tax_country_code,''), COALESCE(tax_rate_pct,0), COALESCE(tax_usd_cents,0),
 	COALESCE(target_country_code,''),
 	proof_url, proof_uploaded_at, proof_status, proof_note,
+	proof_storage_key,
 	created_at, updated_at`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
@@ -115,6 +116,7 @@ const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.c
 	o.baseline_metrics, o.baseline_captured_at, o.baseline_source,
 	o.delivery_metrics, o.delivery_captured_at, o.delivery_source,
 	o.proof_url, o.proof_uploaded_at, o.proof_status, o.proof_note,
+	o.proof_storage_key,
 	o.created_at, o.updated_at,
 	COALESCE(p.name, ''), COALESCE(p.category, ''),
 	COALESCE(u.name, ''), COALESCE(u.email, '')`
@@ -214,6 +216,7 @@ func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 		&o.TaxCountryCode, &o.TaxRatePct, &o.TaxUSDCents,
 		&o.TargetCountryCode,
 		&o.ProofURL, &o.ProofUploadedAt, &o.ProofStatus, &o.ProofNote,
+		&o.ProofStorageKey,
 		&o.CreatedAt, &o.UpdatedAt)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}
@@ -253,6 +256,7 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 			&baseline, &v.BaselineCapturedAt, &v.BaselineSource,
 			&delivery, &v.DeliveryCapturedAt, &v.DeliverySource,
 			&v.ProofURL, &v.ProofUploadedAt, &v.ProofStatus, &v.ProofNote,
+			&v.ProofStorageKey,
 			&v.CreatedAt, &v.UpdatedAt,
 			&v.PlanName, &v.PlanCategory,
 			&v.UserName, &v.UserEmail)
@@ -367,7 +371,14 @@ func (r *OrderRepo) AssignGateway(ctx context.Context, orderID, gatewayID string
 // e atualiza denormalização em orders. proof_status default "pending" —
 // admin marca approved/rejected via backoffice. Idempotente: re-upload
 // sobrescreve denormalização e adiciona nova linha em order_proofs.
-func (r *OrderRepo) SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error {
+//
+// storageKey != "" indica upload novo via MinIO/R2 (PHASE-9 storage rollout):
+// persiste BOTH proof_url (key como string) E proof_storage_key. Esse
+// segundo é a fonte canônica de leitura no handler quando NOT NULL.
+// storageKey == "" preserva o fluxo legacy de fileURL contendo data:URL
+// ou http URL externa — proof_storage_key fica NULL e leitura cai em
+// proof_url igual a antes.
+func (r *OrderRepo) SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int, storageKey string) error {
 	tx, err := r.db.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -386,8 +397,9 @@ func (r *OrderRepo) SetProof(ctx context.Context, orderID, fileURL, fileName, mi
 		       proof_uploaded_at=NOW(),
 		       proof_status=COALESCE(NULLIF(proof_status,'rejected'), 'pending'),
 		       proof_note=NULLIF($3,''),
+		       proof_storage_key=NULLIF($4,''),
 		       updated_at=NOW()
-		 WHERE id=$1 AND status='pending'`, orderID, fileURL, note)
+		 WHERE id=$1 AND status='pending'`, orderID, fileURL, note, storageKey)
 	if err != nil {
 		return err
 	}
@@ -395,6 +407,24 @@ func (r *OrderRepo) SetProof(ctx context.Context, orderID, fileURL, fileName, mi
 		return domain.ErrNotFound
 	}
 	return tx.Commit(ctx)
+}
+
+// SetProofStorageKey grava só a chave de storage — usado pelo migrador
+// offline (cmd/migrate-proofs) após subir o base64 legacy pro MinIO.
+// proof_url permanece intocado pra rollback seguro. Idempotente.
+func (r *OrderRepo) SetProofStorageKey(ctx context.Context, orderID, storageKey string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders
+		   SET proof_storage_key=$2,
+		       updated_at=NOW()
+		 WHERE id=$1`, orderID, storageKey)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 // SetProofStatus muda proof_status pra approved|rejected. NÃO valida

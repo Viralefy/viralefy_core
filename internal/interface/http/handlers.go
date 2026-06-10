@@ -2504,8 +2504,11 @@ func (h *Handlers) MeUploadProof(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.ErrInvalidInput)
 		return
 	}
+	// Fluxo legacy JSON: storageKey="" → proof_storage_key fica NULL e o
+	// reader cai em proof_url (data:/http) como antes. Quando esse handler
+	// é usado, NÃO subimos pro MinIO (cliente já deu URL externa ou base64).
 	if err := h.Orders.SetProof(
-		r.Context(), orderID, body.FileURL, body.FileName, body.MimeType, body.Note, body.SizeBytes,
+		r.Context(), orderID, body.FileURL, body.FileName, body.MimeType, body.Note, body.SizeBytes, "",
 	); err != nil {
 		writeError(w, err)
 		return
@@ -2674,8 +2677,11 @@ func (h *Handlers) uploadProofMultipart(w http.ResponseWriter, r *http.Request, 
 		writeError(w, err)
 		return
 	}
+	// storedKey vai em DOIS lugares: proof_url (retro-compat com leitores
+	// antigos que não conhecem proof_storage_key ainda) E proof_storage_key
+	// (fonte canônica pós-rollout 040). Reader prefere o segundo.
 	if err := h.Orders.SetProof(
-		r.Context(), orderID, storedKey, header.Filename, mime, note, int(header.Size),
+		r.Context(), orderID, storedKey, header.Filename, mime, note, int(header.Size), storedKey,
 	); err != nil {
 		writeError(w, err)
 		return
@@ -2737,19 +2743,39 @@ func (h *Handlers) AdminGetProofURL(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]string{"url": url})
 }
 
-// resolveProofURL decide se proof_url é:
-//   - storage key (não começa com http/data) → presign via Storage
-//   - data URL ou http URL (legacy) → retorna direto
+// resolveProofURL devolve a melhor URL pra renderizar o comprovante,
+// respeitando a precedência pós-migração 040:
 //
-// Mantém retro-compat com proofs uploadados antes do storage rollout.
+//  1. proof_storage_key NOT NULL → presign MinIO/R2 (fonte canônica).
+//     Migrador offline (cmd/migrate-proofs) preenche essa coluna pra
+//     proofs legados; uploads novos preenchem direto via SetProof.
+//  2. proof_url começa com data: ou http(s):// → devolve crua (legacy:
+//     base64 inline ou URL hospedada em terceiro tipo imgur). Necessário
+//     enquanto o migrador não rodou em prod ainda.
+//  3. proof_url é uma key opaca (sem prefixo conhecido) → presign via
+//     Storage. Cobre o caso em que o upload novo gravou só proof_url=key
+//     mas o reader subiu antes do migration 040 chegar no DB.
+//  4. caso contrário → NotFound.
 func (h *Handlers) resolveProofURL(ctx context.Context, o *domain.Order) (string, error) {
-	if o == nil || o.ProofURL == nil || *o.ProofURL == "" {
+	if o == nil {
+		return "", domain.ErrNotFound
+	}
+	// Precedência 1: proof_storage_key (caminho rápido pós-migração).
+	if o.ProofStorageKey != nil && *o.ProofStorageKey != "" {
+		if h.Storage == nil {
+			return "", application.ErrStorageDisabled
+		}
+		return h.Storage.PresignedGetURL(ctx, "proofs", *o.ProofStorageKey, 5*time.Minute)
+	}
+	if o.ProofURL == nil || *o.ProofURL == "" {
 		return "", domain.ErrNotFound
 	}
 	raw := *o.ProofURL
+	// Precedência 2: URL crua (legacy data:URL ou http externo).
 	if strings.HasPrefix(raw, "data:") || strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 		return raw, nil
 	}
+	// Precedência 3: key opaca em proof_url.
 	if h.Storage == nil {
 		return "", application.ErrStorageDisabled
 	}

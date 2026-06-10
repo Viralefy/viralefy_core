@@ -89,7 +89,10 @@ func (f *fakeOrderRepoForCron) SetDeliveryMetrics(ctx context.Context, orderID s
 func (f *fakeOrderRepoForCron) AssignGateway(ctx context.Context, orderID, gatewayID string) error {
 	return errors.New("not implemented")
 }
-func (f *fakeOrderRepoForCron) SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error {
+func (f *fakeOrderRepoForCron) SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int, storageKey string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForCron) SetProofStorageKey(ctx context.Context, orderID, storageKey string) error {
 	return errors.New("not implemented")
 }
 func (f *fakeOrderRepoForCron) SetProofStatus(ctx context.Context, orderID, status, reviewerNote string) error {

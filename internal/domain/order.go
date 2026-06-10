@@ -71,6 +71,11 @@ type Order struct {
 	ProofUploadedAt    *time.Time        `json:"proof_uploaded_at,omitempty"`
 	ProofStatus        *string           `json:"proof_status,omitempty"`
 	ProofNote          *string           `json:"proof_note,omitempty"`
+	// ProofStorageKey aponta pro objeto em MinIO/R2 quando o proof foi
+	// migrado do fluxo legacy de base64-inline em proof_url. NULL ⇒ leitura
+	// cai em proof_url (data:URL legacy ou http externo). Migration 040
+	// adiciona a coluna; cmd/migrate-proofs popula em batch.
+	ProofStorageKey    *string           `json:"proof_storage_key,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 }
@@ -119,8 +124,14 @@ type OrderRepository interface {
 	AssignGateway(ctx context.Context, orderID, gatewayID string) error
 	// SetProof persiste o comprovante anexado pelo cliente. status default
 	// "pending" (admin precisa revisar). url é opaco — pode ser data URL
-	// curto ou http url de storage; tamanho/validação no service.
-	SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int) error
+	// curto, http url externa ou storage key (S3-compat). storageKey != ""
+	// é a forma canônica pós-PHASE-9: indica que o arquivo vive em MinIO/R2
+	// e leitura usa presigned URL. storageKey == "" preserva fluxo legacy.
+	SetProof(ctx context.Context, orderID, fileURL, fileName, mime, note string, sizeBytes int, storageKey string) error
+	// SetProofStorageKey grava apenas proof_storage_key sem mexer em outras
+	// colunas. Uso exclusivo do migrador offline pós-upload em batch dos
+	// proofs legados (base64 em proof_url → MinIO).
+	SetProofStorageKey(ctx context.Context, orderID, storageKey string) error
 	// SetProofStatus atualiza proof_status (approved | rejected) — usado
 	// pelo backoffice quando admin revisa o comprovante. Não dispara
 	// mark-as-paid: aprovação semântica só, side-effect é responsabilidade
