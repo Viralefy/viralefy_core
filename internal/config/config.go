@@ -91,7 +91,11 @@ type StorageConfig struct {
 func (s StorageConfig) Enabled() bool { return s.Endpoint != "" && s.AccessKey != "" }
 
 func Load() (Config, error) {
-	port := getenv("PORT", "8080")
+	// CORE_PORT tem precedência sobre PORT — necessário pra deploy paralelo
+	// da PHASE-9 onde o /etc/viralefy/.env compartilhado tem PORT=8080
+	// (apontando pra api legacy) e EnvironmentFile= no systemd é processado
+	// APÓS Environment=. CORE_PORT é único do core, não tem colisão.
+	port := getenv("CORE_PORT", getenv("PORT", "8080"))
 	// Default seguro: só localhost. Production fica atrás do Caddy. Para expor
 	// externamente sem proxy, defina BIND_HOST=0.0.0.0 explicitamente.
 	bindHost := getenv("BIND_HOST", "127.0.0.1")
