@@ -12,6 +12,20 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// RevocationChecker — interface mínima implementada por
+// infrastructure/auth.RevocationCache. Usada como defense-in-depth (camada 2)
+// em ValidateToken: se o jti do token está revogado, rejeita mesmo que
+// signature/exp estejam válidos. O dispatcher (viralefy_api_rust) é a camada
+// 1 — esta cache cobre o caso de bypass do dispatcher (loopback, mesh
+// interno, debugging direto na porta 8084).
+//
+// Opt-in: se a cache não foi setada (cache == nil em ValidateToken),
+// a checagem é pulada — preserva back-compat com testes e binários sem
+// DB.
+type RevocationChecker interface {
+	IsRevoked(jti string) bool
+}
+
 // UserAuthService — mesma estratégia dual-sign do AuthService (Fase 4.1).
 type UserAuthService struct {
 	users             domain.UserRepository
@@ -30,6 +44,16 @@ type UserAuthService struct {
 	// UserSession com partial token; Complete2FA finaliza. User 2FA é
 	// OPCIONAL — se não enrolled, login passa direto (diferente de admin).
 	twoFA *TwoFAService
+	// revocationCache opcional — defense-in-depth de jtis revogados.
+	// Setado via SetRevocationCache no main wire-up quando DATABASE_URL
+	// está disponível. Nil-safe: nil = pula a checagem (dispatcher cobre).
+	revocationCache RevocationChecker
+}
+
+// SetRevocationCache pluga a cache de jtis revogados. Defense-in-depth:
+// se nil, ValidateToken pula a checagem (dispatcher é a camada primária).
+func (s *UserAuthService) SetRevocationCache(rc RevocationChecker) {
+	s.revocationCache = rc
 }
 
 // SetTwoFA pluga o serviço de 2FA pra usuários.
@@ -358,6 +382,15 @@ func (s *UserAuthService) ValidateToken(tokenStr string) (userID string, err err
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		return "", domain.ErrUnauthorized
+	}
+	// Defense-in-depth (camada 2): jti revogado bloqueia mesmo com
+	// signature/exp válidos. O dispatcher já rejeita antes (camada 1) —
+	// este check só dispara em bypass (loopback/mesh interno).
+	// Nil-safe: sem cache plugada, pula a checagem.
+	if s.revocationCache != nil {
+		if jti, _ := claims["jti"].(string); jti != "" && s.revocationCache.IsRevoked(jti) {
+			return "", domain.ErrUnauthorized
+		}
 	}
 	return sub, nil
 }

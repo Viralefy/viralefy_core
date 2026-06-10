@@ -34,6 +34,14 @@ type AuthService struct {
 	// twoFA é opcional. Sem ele, Login pula o gate de 2FA (HML/dev).
 	// Setado via SetTwoFA no main wire-up quando TWOFA_ENCRYPTION_KEY presente.
 	twoFA *TwoFAService
+	// revocationCache opcional — defense-in-depth de jtis revogados.
+	// Nil-safe: nil = pula a checagem (dispatcher cobre).
+	revocationCache RevocationChecker
+}
+
+// SetRevocationCache pluga a cache de jtis revogados em ValidateAdmin.
+func (s *AuthService) SetRevocationCache(rc RevocationChecker) {
+	s.revocationCache = rc
 }
 
 // SetLegacyHS256Disabled hard-disable HS256 sem reset do secret (permite
@@ -228,6 +236,13 @@ func (s *AuthService) ValidateAdmin(ctx context.Context, tokenStr string) (domai
 	role, _ := claims["role"].(string)
 	if sub == "" || role == "" {
 		return domain.Principal{}, domain.ErrUnauthorized
+	}
+	// Defense-in-depth (camada 2): jti revogado bloqueia mesmo com
+	// signature/exp/role válidos. Nil-safe.
+	if s.revocationCache != nil {
+		if jti, _ := claims["jti"].(string); jti != "" && s.revocationCache.IsRevoked(jti) {
+			return domain.Principal{}, domain.ErrUnauthorized
+		}
 	}
 	perms, err := s.roles.GetPermissions(ctx, role)
 	if err != nil {

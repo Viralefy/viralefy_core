@@ -12,6 +12,7 @@ import (
 
 	"github.com/Viralefy/viralefy_core/internal/application"
 	"github.com/Viralefy/viralefy_core/internal/config"
+	authinfra "github.com/Viralefy/viralefy_core/internal/infrastructure/auth"
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/external/email"
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/external/jwtkeys"
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/external/notify"
@@ -235,6 +236,40 @@ func main() {
 	// aceitos pelo ValidateAdmin/ValidateUser.
 	authSvc.SetLegacyHS256Disabled(cfg.LegacyHS256Disabled)
 	userAuthSvc.SetLegacyHS256Disabled(cfg.LegacyHS256Disabled)
+
+	// Defense-in-depth de revogação (camada 2). O dispatcher rust já
+	// rejeita tokens revogados antes de chegar aqui; esta cache cobre
+	// requests que bypassam o dispatcher (loopback :8084 direto, mesh
+	// interno). Mantém um hot-set in-memory sync com Postgres via LISTEN
+	// `revoked_jtis_inserted` + polling fallback.
+	//
+	// Tolerante a falha: se bootstrap falha (DB down, migration ausente),
+	// continua sem cache — log de warning e o dispatcher segue cobrindo.
+	{
+		bootCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		revLog := func(level, msg string, kv ...any) {
+			switch level {
+			case "warn":
+				logger.Warn(msg, kv...)
+			case "error":
+				logger.Error(msg, kv...)
+			default:
+				logger.Info(msg, kv...)
+			}
+		}
+		revCache, rerr := authinfra.New(bootCtx, db.Pool(), revLog)
+		cancel()
+		if rerr != nil {
+			logger.Warn("revocation_cache init failed; continuing without (dispatcher cobre)",
+				"error", rerr.Error())
+		} else {
+			revCache.Start(context.Background())
+			authSvc.SetRevocationCache(revCache)
+			userAuthSvc.SetRevocationCache(revCache)
+			logger.Info("revocation_cache active (defense-in-depth)",
+				"initial_size", revCache.Size())
+		}
+	}
 
 	// 2FA — quando TWOFA_ENCRYPTION_KEY ausente, services ficam nil e os
 	// endpoints retornam 503 + logins não bloqueiam (HML/dev). Em prod
