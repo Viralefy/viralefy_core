@@ -60,6 +60,70 @@ var (
 		},
 		[]string{"currency_code"},
 	)
+
+	// ─── Stripe reconcile cron metrics ──────────────────────────────────────
+	// Sinal pra SLO stripe_reconcile_freshness: cron de reconciliação roda a
+	// cada 5min puxando orders Stripe pending pra cobrir webhook miss. Sem
+	// essas métricas, alerta SLOStripeReconcileStale dispara via absent() —
+	// o que era o TODO até este ponto.
+	//
+	// Cardinality é controlada: nenhum label de order_id ou session_id. Apenas
+	// "type" no errors counter, fixo em {query, lookup, confirm, rate_limited}.
+
+	// StripeReconcileLastRunTimestamp marca o final do último tick bem-sucedido
+	// (rodou até o fim sem panic — falhas por order não derrubam o tick).
+	// SLO: time() - <metric> < 600s.
+	StripeReconcileLastRunTimestamp = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "viralefy",
+			Name:      "stripe_reconcile_last_run_timestamp",
+			Help:      "Unix timestamp of last successful Stripe reconcile cron tick.",
+		},
+	)
+
+	// StripeReconcileLastRunDurationMs ajuda a detectar tick que ficou lento
+	// (Stripe API degradada, batch crescendo).
+	StripeReconcileLastRunDurationMs = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: "viralefy",
+			Name:      "stripe_reconcile_last_run_duration_ms",
+			Help:      "Duration of last Stripe reconcile cron tick in ms.",
+		},
+	)
+
+	// StripeReconcileOrdersChecked = total cumulativo de orders examinadas
+	// (chamou Stripe API). Rate dá throughput do cron.
+	StripeReconcileOrdersChecked = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "viralefy",
+			Name:      "stripe_reconcile_orders_checked_total",
+			Help:      "Total orders checked by Stripe reconcile cron.",
+		},
+	)
+
+	// StripeReconcileOrdersConfirmed = total cumulativo de orders confirmadas
+	// via reconcile (webhook missed e cron salvou). Idealmente perto de 0.
+	StripeReconcileOrdersConfirmed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "viralefy",
+			Name:      "stripe_reconcile_orders_confirmed_total",
+			Help:      "Total orders confirmed by Stripe reconcile (webhook missed cases).",
+		},
+	)
+
+	// StripeReconcileErrors com label "type" baixa-cardinalidade:
+	//   query        — falha de SELECT inicial (DB)
+	//   lookup       — falha GET Stripe (não-2xx, exceto 404 que é esperado)
+	//   confirm      — ConfirmByExternalRef retornou erro
+	//   rate_limited — HTTP 429 da Stripe (tick aborta tail)
+	StripeReconcileErrors = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "viralefy",
+			Name:      "stripe_reconcile_errors_total",
+			Help:      "Total errors during Stripe reconcile by type (query|lookup|confirm|rate_limited).",
+		},
+		[]string{"type"},
+	)
 )
 
 var (
@@ -80,6 +144,11 @@ func InitMetrics() *prometheus.Registry {
 			DBQueryDurationSeconds,
 			GatewayCallbacksTotal,
 			PlanPriceDriftRows,
+			StripeReconcileLastRunTimestamp,
+			StripeReconcileLastRunDurationMs,
+			StripeReconcileOrdersChecked,
+			StripeReconcileOrdersConfirmed,
+			StripeReconcileErrors,
 		)
 		metricsRegistry = reg
 	})

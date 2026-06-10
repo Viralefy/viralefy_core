@@ -100,6 +100,12 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 	tickCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	// start marca o início pra duração final. Mesmo quando a query inicial
+	// falha (return early abaixo), NÃO marcamos last_run_timestamp — o SLO
+	// pede "última run *bem-sucedida*", então abortos viram silêncio na
+	// gauge (e o alerta absent/stale dispara, que é o comportamento certo).
+	start := time.Now()
+
 	rows, err := c.DB.Pool().Query(tickCtx, `
 		SELECT o.id, o.external_ref, g.config->>'secret_key' AS secret_key
 		FROM orders o
@@ -113,6 +119,7 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 		ORDER BY o.created_at ASC
 		LIMIT 50`)
 	if err != nil {
+		observability.StripeReconcileErrors.WithLabelValues("query").Inc()
 		logger.Warn("query pending orders failed", "error", err.Error())
 		return
 	}
@@ -136,9 +143,14 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 		batch = append(batch, o)
 	}
 	if err := rows.Err(); err != nil {
+		observability.StripeReconcileErrors.WithLabelValues("query").Inc()
 		logger.Warn("rows iter failed", "error", err.Error())
 	}
 	if len(batch) == 0 {
+		// Batch vazio ainda é "tick OK" — sem trabalho a fazer significa que
+		// o sistema está saudável (webhooks chegaram). Marca timestamp pro SLO.
+		observability.StripeReconcileLastRunTimestamp.SetToCurrentTime()
+		observability.StripeReconcileLastRunDurationMs.Set(float64(time.Since(start).Milliseconds()))
 		return
 	}
 	logger.Info("reconcile tick scanning", "batch_size", len(batch))
@@ -149,20 +161,23 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 		if rateLimited {
 			break
 		}
+		observability.StripeReconcileOrdersChecked.Inc()
 		paid, status, err := c.lookupSession(tickCtx, o.SecretKey, o.Ref)
 		if err != nil {
 			if strings.Contains(err.Error(), "HTTP 429") {
 				rateLimited = true
+				observability.StripeReconcileErrors.WithLabelValues("rate_limited").Inc()
 				logger.Warn("stripe rate-limited, deferring batch tail to next tick",
 					"checked_so_far", confirmed,
 				)
 				break
 			}
 			// 404 da Stripe = session foi expirada/deletada — sem nada a fazer.
-			// Log debug-level pra não poluir; warn pra outras falhas.
+			// Não conta como erro (esperado, não polui counter).
 			if strings.Contains(err.Error(), "HTTP 404") {
 				continue
 			}
+			observability.StripeReconcileErrors.WithLabelValues("lookup").Inc()
 			logger.Warn("stripe session lookup failed",
 				"order_id", o.ID,
 				"external_ref", o.Ref,
@@ -178,6 +193,7 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 			continue
 		}
 		if _, err := c.Receiver.ConfirmByExternalRef(tickCtx, o.Ref); err != nil {
+			observability.StripeReconcileErrors.WithLabelValues("confirm").Inc()
 			logger.Warn("confirm failed",
 				"order_id", o.ID,
 				"external_ref", o.Ref,
@@ -186,6 +202,7 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 			continue
 		}
 		confirmed++
+		observability.StripeReconcileOrdersConfirmed.Inc()
 		logger.Info("order confirmed via reconcile poll",
 			"order_id", o.ID,
 			"external_ref", o.Ref,
@@ -198,6 +215,12 @@ func (c *StripeReconcileCron) tick(ctx context.Context) {
 			"confirmed", confirmed,
 		)
 	}
+
+	// Tick chegou ao fim (mesmo com rate_limit no meio do batch — tail será
+	// processado no próximo tick, mas o tick atual *rodou* até onde pôde).
+	// Marca o sinal de freshness pro SLO.
+	observability.StripeReconcileLastRunTimestamp.SetToCurrentTime()
+	observability.StripeReconcileLastRunDurationMs.Set(float64(time.Since(start).Milliseconds()))
 }
 
 // lookupSession chama GET /v1/checkout/sessions/{id} com Basic auth (secret
