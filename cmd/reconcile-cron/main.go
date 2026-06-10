@@ -71,13 +71,15 @@ var invariants = []invariant{
 	{
 		name:        "orders_paid_no_external_ref",
 		severity:    "high",
-		description: "Orders status=paid SEM external_ref (gateway não confirmou ou link quebrado).",
+		description: "Orders status=paid SEM external_ref em gateway EXTERNO (gateway não confirmou ou link quebrado). Exclui providers manuais (manual_pix, manual_*) e pagamentos por créditos — nesses fluxos external_ref é nulo por design.",
 		query: `
-			SELECT id FROM orders
-			WHERE status = 'paid'
-			  AND payment_method = 'gateway'
-			  AND (external_ref IS NULL OR external_ref = '')
-			ORDER BY created_at DESC
+			SELECT o.id FROM orders o
+			LEFT JOIN payment_gateways pg ON pg.id = o.gateway_id
+			WHERE o.status = 'paid'
+			  AND o.payment_method = 'gateway'
+			  AND (o.external_ref IS NULL OR o.external_ref = '')
+			  AND (pg.provider IS NULL OR pg.provider NOT LIKE 'manual_%')
+			ORDER BY o.created_at DESC
 			LIMIT ` + sampleLimitStr,
 	},
 	{
