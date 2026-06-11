@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/Viralefy/viralefy_core/internal/application"
 	"github.com/Viralefy/viralefy_core/internal/domain"
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/external/email"
@@ -64,6 +65,9 @@ type Handlers struct {
 	Vendors       *application.VendorService
 	APIKeys       *application.APIKeyService
 	Events        *application.UserEventService
+	// Honeypot — repo opcional pra ocultar superadmin de admins normais
+	// + logar tentativas pra superadmin auditar.
+	Honeypot      domain.AdminHoneypotRepository
 	// Consent — audit log de decisões de cookie consent (LGPD Art. 8 §6).
 	// Quando nil, POST /v1/me/consent vira 503 (best-effort) e o backend
 	// nem expõe a rota (router.go filtra).
@@ -618,15 +622,65 @@ func toAdminView(a domain.Admin) adminPublicView {
 }
 
 // AdminListAdmins — GET /v1/admin/admins
-// Lista todos os admins do sistema. Gated por PermAdminsManage no router.
+//
+// Honeypot policy (2026-06-11):
+//
+//   Quando o caller NÃO é superadmin:
+//     1. Toda row com role=superadmin é MASCARADA pra role="manager"
+//        (camuflagem — admin nem suspeita que tem alguém com mais poder).
+//     2. Qualquer superadmin que esse caller já "shadow-deletou"
+//        (admin_honeypot_log com action='delete') é EXCLUÍDO da resposta
+//        (admin acha que apagou pra valer).
+//     3. Self entry: o admin sempre aparece com a própria role real
+//        (que NÃO é superadmin, então não cai no mascaramento).
+//
+//   Quando o caller É superadmin: tudo passa cru — vê todos com role
+//   real, incluindo outros superadmins. Sem mascaramento, sem exclusão.
 func (h *Handlers) AdminListAdmins(w http.ResponseWriter, r *http.Request) {
+	caller, _ := principalFromContext(r.Context())
 	list, err := h.Auth.AdminListAdmins(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+
+	// Path superadmin — passa tudo cru.
+	if caller.Role == domain.RoleSuperadmin {
+		out := make([]adminPublicView, 0, len(list))
+		for _, a := range list {
+			out = append(out, toAdminView(a))
+		}
+		writeData(w, http.StatusOK, out)
+		return
+	}
+
+	// Path admin normal — mascarar + filtrar shadow-deleted.
+	shadowDeletedIDs := map[string]bool{}
+	if h.Honeypot != nil {
+		ids, _ := h.Honeypot.ActorShadowDeletedTargets(r.Context(), caller.AdminID)
+		for _, id := range ids {
+			shadowDeletedIDs[id] = true
+		}
+	}
+
 	out := make([]adminPublicView, 0, len(list))
 	for _, a := range list {
+		// Self → renderiza com role real do caller.
+		if a.ID == caller.AdminID {
+			out = append(out, toAdminView(a))
+			continue
+		}
+		// Shadow-deleted por este caller? Pula.
+		if shadowDeletedIDs[a.ID] {
+			continue
+		}
+		// Mascarar superadmin → manager pra esconder hierarquia real.
+		if a.Role == domain.RoleSuperadmin {
+			masked := a
+			masked.Role = "manager"
+			out = append(out, toAdminView(masked))
+			continue
+		}
 		out = append(out, toAdminView(a))
 	}
 	writeData(w, http.StatusOK, out)
@@ -677,8 +731,17 @@ func (h *Handlers) AdminCreateAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminUpdateAdmin — PUT /v1/admin/admins/{id}
-// Body: { role }. Só atualiza role (email/name não mudam — admin deleta
-// e re-cria se precisa renomear).
+//
+// Honeypot: quando caller != superadmin tenta editar um superadmin,
+// NÃO retorna 403 (que revelaria a existência da hierarquia). Em vez disso:
+//   1. Grava admin_honeypot_log entry (action='update_role')
+//   2. Retorna 200 com adminPublicView FALSA (role mascarada como
+//      "manager" + nova role do payload aplicada visualmente)
+//   3. Persistência real do role do superadmin NÃO acontece — ele
+//      continua superadmin no DB.
+//
+// Pro superadmin de verdade que olha o painel, nada muda. Pro admin
+// malicioso, tudo parece ter funcionado.
 func (h *Handlers) AdminUpdateAdmin(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -693,6 +756,21 @@ func (h *Handlers) AdminUpdateAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	caller, _ := principalFromContext(r.Context())
+
+	// Honeypot path — caller não é superadmin tentando mexer num target
+	// que é superadmin. Detecta via lookup do target.
+	if caller.Role != domain.RoleSuperadmin {
+		target, _ := h.Auth.GetAdminByID(r.Context(), id)
+		if target != nil && target.Role == domain.RoleSuperadmin {
+			h.logHoneypot(r.Context(), caller.AdminID, id, domain.HoneypotActionUpdateRole, body.Role, r)
+			// Retorna view falsa — role que o admin tentou aplicar.
+			fake := *target
+			fake.Role = body.Role
+			writeData(w, http.StatusOK, toAdminView(fake))
+			return
+		}
+	}
+
 	if err := h.Auth.AdminUpdateRole(r.Context(), caller, id, body.Role); err != nil {
 		writeError(w, err)
 		return
@@ -716,8 +794,11 @@ func (h *Handlers) AdminUpdateAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminDeleteAdmin — DELETE /v1/admin/admins/{id}
-// Hard delete. Self-delete + delete de superadmin por não-superadmin são
-// bloqueados pelo service.
+//
+// Honeypot: caller não-superadmin tentando apagar superadmin → grava
+// entry no admin_honeypot_log com action='delete' (que também serve de
+// shadow-delete state: na próxima listagem, esse caller não vê mais o
+// target) e retorna 200 "status: deleted" sem tocar no DB.
 func (h *Handlers) AdminDeleteAdmin(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if id == "" {
@@ -725,6 +806,16 @@ func (h *Handlers) AdminDeleteAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	caller, _ := principalFromContext(r.Context())
+
+	if caller.Role != domain.RoleSuperadmin {
+		target, _ := h.Auth.GetAdminByID(r.Context(), id)
+		if target != nil && target.Role == domain.RoleSuperadmin {
+			h.logHoneypot(r.Context(), caller.AdminID, id, domain.HoneypotActionDelete, "", r)
+			writeData(w, http.StatusOK, map[string]string{"status": "deleted"})
+			return
+		}
+	}
+
 	if err := h.Auth.AdminDelete(r.Context(), caller, id); err != nil {
 		writeError(w, err)
 		return
@@ -739,6 +830,50 @@ func (h *Handlers) AdminDeleteAdmin(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeData(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// logHoneypot — helper privado que grava tentativa de admin malicioso no
+// admin_honeypot_log. Best-effort: erro de gravação NÃO bloqueia a fake
+// response (a UX do attacker tem que ser idêntica à path real).
+func (h *Handlers) logHoneypot(ctx context.Context, actorID, targetID, action, attemptedRole string, r *http.Request) {
+	if h.Honeypot == nil {
+		return
+	}
+	entry := domain.AdminHoneypotEntry{
+		ID:            uuid.NewString(),
+		ActorAdminID:  actorID,
+		TargetAdminID: targetID,
+		Action:        action,
+		Metadata: map[string]any{
+			"ip":         clientIP(r),
+			"user_agent": r.Header.Get("User-Agent"),
+		},
+	}
+	if attemptedRole != "" {
+		entry.AttemptedRole = &attemptedRole
+	}
+	_ = h.Honeypot.Record(ctx, entry)
+}
+
+// AdminListHoneypot — GET /v1/admin/honeypot (RequireSuperadmin)
+//
+// Devolve tentativas registradas pra superadmin auditar. Hidratado com
+// email/name de actor + target. Limit default 200.
+func (h *Handlers) AdminListHoneypot(w http.ResponseWriter, r *http.Request) {
+	if h.Honeypot == nil {
+		writeData(w, http.StatusOK, []any{})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 200
+	}
+	list, err := h.Honeypot.ListAll(r.Context(), limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, list)
 }
 
 func (h *Handlers) AdminLogin(w http.ResponseWriter, r *http.Request) {
@@ -2474,6 +2609,111 @@ func (h *Handlers) MeJourney(w http.ResponseWriter, r *http.Request) {
 		"journey": journey,
 		"events":  events,
 	})
+}
+
+// ---------- Bulk soft delete ------------------------------------------------
+//
+// 3 endpoints (orders/invoices/users), todos gated por PermAdminsManage.
+// Body: { ids: ["..."], reason?: "..." }. Limite de 200 ids por chamada
+// pra evitar SQL flood. Erro por id é loggado mas não interrompe — devolve
+// resumo final {succeeded, failed: [{id, error}]}.
+//
+// Hard delete em massa NÃO existe pra não dar arma de destruição em massa
+// nem pra superadmin. Pra purgar precisa ir 1 por 1 na aba Trash.
+
+type bulkDeleteRequest struct {
+	IDs    []string `json:"ids"`
+	Reason string   `json:"reason"`
+}
+
+type bulkDeleteResponse struct {
+	Succeeded int                  `json:"succeeded"`
+	Failed    []bulkDeleteFailure  `json:"failed,omitempty"`
+}
+
+type bulkDeleteFailure struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+func decodeBulkDelete(r *http.Request) (*bulkDeleteRequest, error) {
+	var b bulkDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		return nil, err
+	}
+	if len(b.IDs) == 0 {
+		return nil, domain.ErrInvalidInput
+	}
+	if len(b.IDs) > 200 {
+		return nil, domain.ErrInvalidInput
+	}
+	return &b, nil
+}
+
+func (h *Handlers) AdminBulkSoftDeleteOrders(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBulkDelete(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	caller, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	resp := bulkDeleteResponse{}
+	for _, id := range body.IDs {
+		if err := h.Orders.SoftDeleteOrder(r.Context(), id, caller.AdminID, body.Reason); err != nil {
+			resp.Failed = append(resp.Failed, bulkDeleteFailure{ID: id, Error: err.Error()})
+			continue
+		}
+		resp.Succeeded++
+	}
+	writeData(w, http.StatusOK, resp)
+}
+
+func (h *Handlers) AdminBulkSoftDeleteInvoices(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBulkDelete(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	caller, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	resp := bulkDeleteResponse{}
+	for _, id := range body.IDs {
+		if err := h.Invoices.AdminSoftDelete(r.Context(), id, caller.AdminID, body.Reason); err != nil {
+			resp.Failed = append(resp.Failed, bulkDeleteFailure{ID: id, Error: err.Error()})
+			continue
+		}
+		resp.Succeeded++
+	}
+	writeData(w, http.StatusOK, resp)
+}
+
+func (h *Handlers) AdminBulkSoftDeleteUsers(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeBulkDelete(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	caller, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	resp := bulkDeleteResponse{}
+	for _, id := range body.IDs {
+		if err := h.Users.SoftDeleteUser(r.Context(), id, caller.AdminID, body.Reason); err != nil {
+			resp.Failed = append(resp.Failed, bulkDeleteFailure{ID: id, Error: err.Error()})
+			continue
+		}
+		resp.Succeeded++
+	}
+	writeData(w, http.StatusOK, resp)
 }
 
 // AdminTrash — GET /v1/admin/trash (superadmin only)

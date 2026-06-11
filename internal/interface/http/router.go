@@ -264,9 +264,19 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequireSuperadmin).Delete("/users/{id}/hard", h.AdminHardDeleteUser)
 			r.With(RequireSuperadmin).Post("/users/{id}/restore", h.AdminRestoreUser)
 
+			// Bulk soft delete — body {ids:[], reason?:""}. Hard NÃO existe
+			// em bulk: pra purgar precisa ir 1 a 1 na aba Trash.
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/bulk/soft-delete", h.AdminBulkSoftDeleteOrders)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/invoices/bulk/soft-delete", h.AdminBulkSoftDeleteInvoices)
+			r.With(RequirePermission(domain.PermAdminsManage)).Post("/users/bulk/soft-delete", h.AdminBulkSoftDeleteUsers)
+
 			// Trash — aba consolidada de tudo que admin apagou. Só
 			// superadmin acessa; oculto do fluxo normal.
 			r.With(RequireSuperadmin).Get("/trash", h.AdminTrash)
+
+			// Honeypot — só superadmin enxerga. Lista as tentativas de
+			// admins normais de mexer em superadmins (que viraram no-op).
+			r.With(RequireSuperadmin).Get("/honeypot", h.AdminListHoneypot)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/users/{id}/credits/adjust", h.AdminAdjustCredits)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/proof/decision", h.AdminProofDecision)

@@ -127,6 +127,7 @@ func main() {
 	apiKeyRepo := postgres.NewAPIKeyRepo(db)
 	userEventRepo := postgres.NewUserEventRepo(db)
 	userConsentRepo := postgres.NewUserConsentRepo(db)
+	adminHoneypotRepo := postgres.NewAdminHoneypotRepo(db)
 	ticketRepo := postgres.NewTicketRepo(db)
 	profileRepo := postgres.NewProfileRepo(db)
 	creditRepo := postgres.NewCreditRepo(db)
@@ -422,6 +423,7 @@ func main() {
 		Vendors:         vendorSvc,
 		APIKeys:         apiKeySvc,
 		Events:          userEventSvc,
+		Honeypot:        adminHoneypotRepo,
 		Consent:         userConsentSvc,
 		Email:           emailSender,
 		Storage:         buildStorage(cfg.Storage, logger),
