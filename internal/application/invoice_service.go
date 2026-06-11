@@ -171,6 +171,12 @@ func (s *InvoiceService) AdminRestore(ctx context.Context, id string) error {
 	return s.invoices.RestoreInvoice(ctx, id)
 }
 
+// AdminListDeleted devolve invoices soft-deleted (com user hidratado) pra
+// a aba Trash do superadmin. Pass-through pro repo.
+func (s *InvoiceService) AdminListDeleted(ctx context.Context, limit int) ([]domain.InvoiceView, error) {
+	return s.invoices.ListDeletedView(ctx, limit)
+}
+
 // AdminMarkPaid: marca invoice como paga e credita o saldo (idempotente).
 // Útil enquanto webhook não está plugado (admin confirma manualmente).
 func (s *InvoiceService) AdminMarkPaid(ctx context.Context, id string) (*domain.Invoice, error) {

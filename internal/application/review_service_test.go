@@ -151,6 +151,9 @@ func (f *fakeOrderRepoForReview) HardDeleteOrder(ctx context.Context, id string)
 func (f *fakeOrderRepoForReview) RestoreOrder(ctx context.Context, id string) error {
 	return errors.New("not implemented")
 }
+func (f *fakeOrderRepoForReview) ListDeletedView(ctx context.Context, limit int) ([]domain.OrderView, error) {
+	return nil, errors.New("not implemented")
+}
 
 // fakePlanRepoForReview retorna um plan fixo por id.
 type fakePlanRepoForReview struct{}

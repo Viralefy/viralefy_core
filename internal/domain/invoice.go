@@ -61,4 +61,6 @@ type InvoiceRepository interface {
 	SoftDeleteInvoice(ctx context.Context, id, adminID, reason string) error
 	HardDeleteInvoice(ctx context.Context, id string) error
 	RestoreInvoice(ctx context.Context, id string) error
+	// ListDeletedView pra aba Trash do superadmin.
+	ListDeletedView(ctx context.Context, limit int) ([]InvoiceView, error)
 }

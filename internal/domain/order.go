@@ -152,4 +152,7 @@ type OrderRepository interface {
 	SoftDeleteOrder(ctx context.Context, id, adminID, reason string) error
 	HardDeleteOrder(ctx context.Context, id string) error
 	RestoreOrder(ctx context.Context, id string) error
+	// ListDeletedView devolve orders soft-deleted hidratadas (plan+user).
+	// Usado SÓ pela aba Trash do superadmin.
+	ListDeletedView(ctx context.Context, limit int) ([]OrderView, error)
 }

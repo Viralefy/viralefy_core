@@ -102,14 +102,33 @@ func (r *OrderRepo) ListByUser(ctx context.Context, userID string) ([]domain.Ord
 }
 
 func (r *OrderRepo) ListAll(ctx context.Context) ([]domain.Order, error) {
-	// Admin — inclui soft-deleted. UI mostra badge "Deleted" pra deixar óbvio.
+	// Admin path normal — esconde soft-deleted (vai pra aba Trash do
+	// superadmin). Mantém workflow do dia-a-dia limpo.
 	rows, err := r.db.pool.Query(ctx, `SELECT `+orderCols+`
-		FROM orders ORDER BY created_at DESC LIMIT 200`)
+		FROM orders WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 200`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanOrders(rows)
+}
+
+// ListDeletedView devolve SÓ as orders soft-deleted (deleted_at IS NOT NULL)
+// hidratadas com plano + user pra aba Trash do superadmin. ORDER por
+// deleted_at DESC pra mostrar deletes mais recentes primeiro.
+func (r *OrderRepo) ListDeletedView(ctx context.Context, limit int) ([]domain.OrderView, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.db.pool.Query(ctx, `SELECT `+orderViewCols+`
+		`+orderViewFrom+`
+		WHERE o.deleted_at IS NOT NULL
+		ORDER BY o.deleted_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanOrderViews(rows)
 }
 
 // SoftDeleteOrder marca a order como soft-deleted, grava quem foi o admin
@@ -191,8 +210,10 @@ func (r *OrderRepo) ListViewByUser(ctx context.Context, userID string) ([]domain
 }
 
 func (r *OrderRepo) ListAllView(ctx context.Context) ([]domain.OrderView, error) {
+	// Admin path normal — esconde soft-deleted (vai pra aba Trash).
 	rows, err := r.db.pool.Query(ctx, `SELECT `+orderViewCols+`
 		`+orderViewFrom+`
+		WHERE o.deleted_at IS NULL
 		ORDER BY o.created_at DESC LIMIT 200`)
 	if err != nil {
 		return nil, err

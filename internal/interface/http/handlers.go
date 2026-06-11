@@ -2476,6 +2476,51 @@ func (h *Handlers) MeJourney(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// AdminTrash — GET /v1/admin/trash (superadmin only)
+//
+// Endpoint consolidado pra aba "Trash" do painel admin. Devolve TODOS os
+// items soft-deleted das 3 entidades principais:
+//
+//   - orders   (até 100 mais recentes deletados, hidratado com plan+user)
+//   - invoices (idem, com user)
+//   - users    (idem, com saldo de credit_accounts)
+//
+// Cada item carrega deleted_at + deleted_by_admin_id + delete_reason pra
+// trilha. UI lista, deixa o superadmin clicar pra ir no detail page de cada
+// um e restaurar ou hard-delete.
+//
+// Por que consolidado em vez de 3 endpoints separados:
+// o caso de uso é "ver tudo que admin apagou de uma vez" — 1 round-trip
+// é mais barato. Volume é baixo (deletes são raros), max 300 items total.
+func (h *Handlers) AdminTrash(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, _ := strconv.Atoi(v); n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	orders, err := h.Orders.ListDeletedView(r.Context(), limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	invoices, err := h.Invoices.AdminListDeleted(r.Context(), limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	users, err := h.Users.ListDeletedWithCreditBalance(r.Context(), limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"orders":   orders,
+		"invoices": invoices,
+		"users":    users,
+	})
+}
+
 // ---------- Admin SOFT / HARD delete ---------------------------------------
 //
 // 3 entidades cobertas: orders, invoices, users. Cada uma tem 3 rotas:

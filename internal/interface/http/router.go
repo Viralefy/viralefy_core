@@ -263,6 +263,10 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermAdminsManage)).Delete("/users/{id}", h.AdminSoftDeleteUser)
 			r.With(RequireSuperadmin).Delete("/users/{id}/hard", h.AdminHardDeleteUser)
 			r.With(RequireSuperadmin).Post("/users/{id}/restore", h.AdminRestoreUser)
+
+			// Trash — aba consolidada de tudo que admin apagou. Só
+			// superadmin acessa; oculto do fluxo normal.
+			r.With(RequireSuperadmin).Get("/trash", h.AdminTrash)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/users/{id}/credits/adjust", h.AdminAdjustCredits)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/proof/decision", h.AdminProofDecision)

@@ -45,4 +45,6 @@ type UserRepository interface {
 	SoftDeleteUser(ctx context.Context, id, adminID, reason string) error
 	HardDeleteUser(ctx context.Context, id string) error
 	RestoreUser(ctx context.Context, id string) error
+	// ListDeletedWithCreditBalance pra aba Trash do superadmin.
+	ListDeletedWithCreditBalance(ctx context.Context, limit int) ([]UserView, error)
 }

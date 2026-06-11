@@ -65,6 +65,7 @@ func (r *UserRepo) ListWithCreditBalance(ctx context.Context, limit int) ([]doma
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
+	// Admin path normal — soft-deleted vão pra aba Trash.
 	rows, err := r.db.pool.Query(ctx, `
 		SELECT u.id, u.email, u.name, u.instagram,
 		       COALESCE(u.phone, ''), COALESCE(u.telegram, ''),
@@ -72,7 +73,39 @@ func (r *UserRepo) ListWithCreditBalance(ctx context.Context, limit int) ([]doma
 		       u.deleted_at, u.deleted_by_admin_id, u.delete_reason
 		FROM users u
 		LEFT JOIN credit_accounts c ON c.user_id = u.id
+		WHERE u.deleted_at IS NULL
 		ORDER BY u.created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []domain.UserView{}
+	for rows.Next() {
+		var v domain.UserView
+		if err := rows.Scan(&v.ID, &v.Email, &v.Name, &v.Instagram, &v.Phone, &v.Telegram, &v.CreatedAt, &v.BalanceCents,
+			&v.DeletedAt, &v.DeletedByAdminID, &v.DeleteReason); err != nil {
+			return nil, err
+		}
+		list = append(list, v)
+	}
+	return list, rows.Err()
+}
+
+// ListDeletedWithCreditBalance devolve usuários soft-deleted pra aba Trash
+// do superadmin. Inclui balance pra deixar óbvio quanto crédito foi parado.
+func (r *UserRepo) ListDeletedWithCreditBalance(ctx context.Context, limit int) ([]domain.UserView, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := r.db.pool.Query(ctx, `
+		SELECT u.id, u.email, u.name, u.instagram,
+		       COALESCE(u.phone, ''), COALESCE(u.telegram, ''),
+		       u.created_at, COALESCE(c.balance_cents, 0),
+		       u.deleted_at, u.deleted_by_admin_id, u.delete_reason
+		FROM users u
+		LEFT JOIN credit_accounts c ON c.user_id = u.id
+		WHERE u.deleted_at IS NOT NULL
+		ORDER BY u.deleted_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}

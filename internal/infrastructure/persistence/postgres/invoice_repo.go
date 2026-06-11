@@ -101,20 +101,65 @@ func (r *InvoiceRepo) RestoreInvoice(ctx context.Context, id string) error {
 }
 
 func (r *InvoiceRepo) ListAll(ctx context.Context, statusFilter string) ([]domain.Invoice, error) {
+	// Admin path normal — soft-deleted vão pra aba Trash.
 	var rows pgx.Rows
 	var err error
 	if statusFilter != "" {
 		rows, err = r.db.pool.Query(ctx, `SELECT `+invoiceCols+`
-			FROM invoices WHERE status=$1 ORDER BY created_at DESC LIMIT 500`, statusFilter)
+			FROM invoices WHERE status=$1 AND deleted_at IS NULL
+			ORDER BY created_at DESC LIMIT 500`, statusFilter)
 	} else {
 		rows, err = r.db.pool.Query(ctx, `SELECT `+invoiceCols+`
-			FROM invoices ORDER BY created_at DESC LIMIT 500`)
+			FROM invoices WHERE deleted_at IS NULL
+			ORDER BY created_at DESC LIMIT 500`)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanInvoices(rows)
+}
+
+// ListDeletedView devolve invoices soft-deleted + user via JOIN, pra a aba
+// Trash do superadmin.
+func (r *InvoiceRepo) ListDeletedView(ctx context.Context, limit int) ([]domain.InvoiceView, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.db.pool.Query(ctx, `SELECT
+		i.id, i.user_id, i.amount_cents, i.currency,
+		i.display_currency, i.display_amount, i.settlement_currency, i.settlement_amount,
+		i.status, i.gateway_id, i.external_ref, i.payment_url, i.payment_extra,
+		i.created_at, i.updated_at, i.paid_at,
+		i.deleted_at, i.deleted_by_admin_id, i.delete_reason,
+		COALESCE(u.name, ''), COALESCE(u.email, '')
+		FROM invoices i
+		LEFT JOIN users u ON u.id = i.user_id
+		WHERE i.deleted_at IS NOT NULL
+		ORDER BY i.deleted_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.InvoiceView{}
+	for rows.Next() {
+		var v domain.InvoiceView
+		var extra []byte
+		if err := rows.Scan(&v.ID, &v.UserID, &v.AmountCents, &v.Currency,
+			&v.DisplayCurrency, &v.DisplayAmount, &v.SettlementCurrency, &v.SettlementAmount,
+			&v.Status, &v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra,
+			&v.CreatedAt, &v.UpdatedAt, &v.PaidAt,
+			&v.DeletedAt, &v.DeletedByAdminID, &v.DeleteReason,
+			&v.UserName, &v.UserEmail); err != nil {
+			return nil, err
+		}
+		v.PaymentExtra = map[string]string{}
+		if len(extra) > 0 {
+			_ = json.Unmarshal(extra, &v.PaymentExtra)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 func (r *InvoiceRepo) UpdatePayment(ctx context.Context, id, externalRef, paymentURL string, extra map[string]string) error {
