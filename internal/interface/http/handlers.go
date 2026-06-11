@@ -2476,6 +2476,173 @@ func (h *Handlers) MeJourney(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ---------- Admin SOFT / HARD delete ---------------------------------------
+//
+// 3 entidades cobertas: orders, invoices, users. Cada uma tem 3 rotas:
+//
+//   DELETE /v1/admin/<entity>/{id}            soft  (PermAdminsManage)
+//   DELETE /v1/admin/<entity>/{id}/hard       hard  (RequireSuperadmin)
+//   POST   /v1/admin/<entity>/{id}/restore    restaura (RequireSuperadmin)
+//
+// Body opcional pra soft delete (JSON): {"reason": "fraud / refunded / etc"}
+// O campo deleted_by_admin_id é gravado a partir do principal do request.
+//
+// Convenção de resposta: 204 No Content em sucesso (sem payload). Erros
+// canônicos via writeError (404 NOT_FOUND quando id inexistente).
+
+type deleteRequestBody struct {
+	Reason string `json:"reason"`
+}
+
+func decodeDeleteBody(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+	var b deleteRequestBody
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	return strings.TrimSpace(b.Reason)
+}
+
+// AdminSoftDeleteOrder — DELETE /v1/admin/orders/{id}
+func (h *Handlers) AdminSoftDeleteOrder(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	reason := decodeDeleteBody(r)
+	if err := h.Orders.SoftDeleteOrder(r.Context(), id, p.AdminID, reason); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminHardDeleteOrder — DELETE /v1/admin/orders/{id}/hard (superadmin)
+func (h *Handlers) AdminHardDeleteOrder(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Orders.HardDeleteOrder(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminRestoreOrder — POST /v1/admin/orders/{id}/restore (superadmin)
+func (h *Handlers) AdminRestoreOrder(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Orders.RestoreOrder(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminSoftDeleteInvoice — DELETE /v1/admin/invoices/{id}
+func (h *Handlers) AdminSoftDeleteInvoice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	reason := decodeDeleteBody(r)
+	if err := h.Invoices.AdminSoftDelete(r.Context(), id, p.AdminID, reason); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) AdminHardDeleteInvoice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Invoices.AdminHardDelete(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) AdminRestoreInvoice(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Invoices.AdminRestore(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// AdminSoftDeleteUser — DELETE /v1/admin/users/{id}
+func (h *Handlers) AdminSoftDeleteUser(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	p, ok := principalFromContext(r.Context())
+	if !ok {
+		writeError(w, domain.ErrUnauthorized)
+		return
+	}
+	reason := decodeDeleteBody(r)
+	if err := h.Users.SoftDeleteUser(r.Context(), id, p.AdminID, reason); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) AdminHardDeleteUser(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Users.HardDeleteUser(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) AdminRestoreUser(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	if err := h.Users.RestoreUser(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // AdminUserJourney — GET /v1/admin/users/{id}/journey
 // Espelha MeJourney mas pra qualquer user lookup-by-id. Devolve journey
 // agregado + últimos 100 eventos (mais alto que MeJourney pra dar contexto

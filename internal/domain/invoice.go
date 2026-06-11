@@ -33,6 +33,10 @@ type Invoice struct {
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
 	PaidAt             *time.Time        `json:"paid_at,omitempty"`
+	// Soft-delete (migration 045) — vide Order pra contexto.
+	DeletedAt          *time.Time        `json:"deleted_at,omitempty"`
+	DeletedByAdminID   *string           `json:"deleted_by_admin_id,omitempty"`
+	DeleteReason       *string           `json:"delete_reason,omitempty"`
 }
 
 // InvoiceView é Invoice + dados do usuário hidratados via JOIN. Usado
@@ -54,4 +58,7 @@ type InvoiceRepository interface {
 	UpdatePayment(ctx context.Context, id, externalRef, paymentURL string, extra map[string]string) error
 	MarkPaid(ctx context.Context, id string) error
 	UpdateStatus(ctx context.Context, id string, status InvoiceStatus) error
+	SoftDeleteInvoice(ctx context.Context, id, adminID, reason string) error
+	HardDeleteInvoice(ctx context.Context, id string) error
+	RestoreInvoice(ctx context.Context, id string) error
 }

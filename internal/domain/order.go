@@ -78,6 +78,12 @@ type Order struct {
 	ProofStorageKey    *string           `json:"proof_storage_key,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
+	// Soft-delete (migration 045). Quando deleted_at != nil, a ordem some
+	// das listagens da loja (filtro deleted_at IS NULL). Painel admin
+	// continua listando com badge "Deleted" — só superadmin pode HARD-delete.
+	DeletedAt          *time.Time        `json:"deleted_at,omitempty"`
+	DeletedByAdminID   *string           `json:"deleted_by_admin_id,omitempty"`
+	DeleteReason       *string           `json:"delete_reason,omitempty"`
 }
 
 // OrderView é um read-model de pedido enriquecido com dados do plano,
@@ -141,4 +147,9 @@ type OrderRepository interface {
 	// fila de revisão no backoffice. Ordena por proof_uploaded_at ASC
 	// (mais antigos primeiro — SLA tracker).
 	ListPendingProofs(ctx context.Context, limit int) ([]OrderView, error)
+	// SoftDeleteOrder / HardDeleteOrder / RestoreOrder — migration 045.
+	// Soft = flag (admin+), hard = expurgo (superadmin), restore = undo.
+	SoftDeleteOrder(ctx context.Context, id, adminID, reason string) error
+	HardDeleteOrder(ctx context.Context, id string) error
+	RestoreOrder(ctx context.Context, id string) error
 }

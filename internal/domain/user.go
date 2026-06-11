@@ -22,6 +22,13 @@ type User struct {
 	// landing_url + ip/user_agent server-side). Guardado uma vez no
 	// register/checkout-anônimo; não atualizado depois.
 	TrackingData map[string]any `json:"tracking_data,omitempty"`
+	// Soft-delete (migration 020 + 045). Quando deleted_at != nil, o user
+	// fica invisível pra UI da loja (login bloqueado em viralefy_auth,
+	// listagens /v1/me/* vazias). Painel admin lista inclusive deletados
+	// com badge — superadmin pode HARD-delete depois.
+	DeletedAt         *time.Time `json:"deleted_at,omitempty"`
+	DeletedByAdminID  *string    `json:"deleted_by_admin_id,omitempty"`
+	DeleteReason      *string    `json:"delete_reason,omitempty"`
 }
 
 // UserView é o user enriquecido com saldo (para listagens no admin).
@@ -35,4 +42,7 @@ type UserRepository interface {
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	GetByID(ctx context.Context, id string) (*User, error)
 	ListWithCreditBalance(ctx context.Context, limit int) ([]UserView, error)
+	SoftDeleteUser(ctx context.Context, id, adminID, reason string) error
+	HardDeleteUser(ctx context.Context, id string) error
+	RestoreUser(ctx context.Context, id string) error
 }

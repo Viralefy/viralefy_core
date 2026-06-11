@@ -142,6 +142,15 @@ func (f *fakeOrderRepoForReview) SetProofStatus(ctx context.Context, orderID, st
 func (f *fakeOrderRepoForReview) ListPendingProofs(ctx context.Context, limit int) ([]domain.OrderView, error) {
 	return nil, errors.New("not implemented")
 }
+func (f *fakeOrderRepoForReview) SoftDeleteOrder(ctx context.Context, id, adminID, reason string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForReview) HardDeleteOrder(ctx context.Context, id string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForReview) RestoreOrder(ctx context.Context, id string) error {
+	return errors.New("not implemented")
+}
 
 // fakePlanRepoForReview retorna um plan fixo por id.
 type fakePlanRepoForReview struct{}

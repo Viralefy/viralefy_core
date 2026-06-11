@@ -249,6 +249,20 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users/{id}/journey", h.AdminUserJourney)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/visitors", h.AdminListVisitors)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/visitors/{vid}", h.AdminGetVisitor)
+
+			// SOFT delete (admin com PermAdminsManage). HARD delete + RESTORE
+			// (superadmin only). 3 entidades: orders, invoices, users.
+			r.With(RequirePermission(domain.PermAdminsManage)).Delete("/orders/{id}", h.AdminSoftDeleteOrder)
+			r.With(RequireSuperadmin).Delete("/orders/{id}/hard", h.AdminHardDeleteOrder)
+			r.With(RequireSuperadmin).Post("/orders/{id}/restore", h.AdminRestoreOrder)
+
+			r.With(RequirePermission(domain.PermAdminsManage)).Delete("/invoices/{id}", h.AdminSoftDeleteInvoice)
+			r.With(RequireSuperadmin).Delete("/invoices/{id}/hard", h.AdminHardDeleteInvoice)
+			r.With(RequireSuperadmin).Post("/invoices/{id}/restore", h.AdminRestoreInvoice)
+
+			r.With(RequirePermission(domain.PermAdminsManage)).Delete("/users/{id}", h.AdminSoftDeleteUser)
+			r.With(RequireSuperadmin).Delete("/users/{id}/hard", h.AdminHardDeleteUser)
+			r.With(RequireSuperadmin).Post("/users/{id}/restore", h.AdminRestoreUser)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/users/{id}/credits/adjust", h.AdminAdjustCredits)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/proof/decision", h.AdminProofDecision)

@@ -156,6 +156,21 @@ func (s *InvoiceService) AdminListView(ctx context.Context, statusFilter string)
 	return s.invoices.ListAllView(ctx, statusFilter)
 }
 
+// AdminSoftDelete / AdminHardDelete / AdminRestore — pass-through pro repo.
+// Mantém a regra de quem pode chamar no nível HTTP (RequirePermission /
+// RequireSuperadmin); aqui só repassamos.
+func (s *InvoiceService) AdminSoftDelete(ctx context.Context, id, adminID, reason string) error {
+	return s.invoices.SoftDeleteInvoice(ctx, id, adminID, reason)
+}
+
+func (s *InvoiceService) AdminHardDelete(ctx context.Context, id string) error {
+	return s.invoices.HardDeleteInvoice(ctx, id)
+}
+
+func (s *InvoiceService) AdminRestore(ctx context.Context, id string) error {
+	return s.invoices.RestoreInvoice(ctx, id)
+}
+
 // AdminMarkPaid: marca invoice como paga e credita o saldo (idempotente).
 // Útil enquanto webhook não está plugado (admin confirma manualmente).
 func (s *InvoiceService) AdminMarkPaid(ctx context.Context, id string) (*domain.Invoice, error) {

@@ -25,7 +25,8 @@ const orderCols = `id, user_id, plan_id, status, amount_cents, currency,
 	COALESCE(target_country_code,''),
 	proof_url, proof_uploaded_at, proof_status, proof_note,
 	proof_storage_key,
-	created_at, updated_at`
+	created_at, updated_at,
+	deleted_at, deleted_by_admin_id, delete_reason`
 
 func (r *OrderRepo) Create(ctx context.Context, o domain.Order) error {
 	extra, _ := json.Marshal(o.PaymentExtra)
@@ -89,8 +90,10 @@ func (r *OrderRepo) GetByExternalRef(ctx context.Context, ref string) (*domain.O
 }
 
 func (r *OrderRepo) ListByUser(ctx context.Context, userID string) ([]domain.Order, error) {
+	// User-facing — esconde linhas soft-deleted.
 	rows, err := r.db.pool.Query(ctx, `SELECT `+orderCols+`
-		FROM orders WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+		FROM orders WHERE user_id=$1 AND deleted_at IS NULL
+		ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +102,7 @@ func (r *OrderRepo) ListByUser(ctx context.Context, userID string) ([]domain.Ord
 }
 
 func (r *OrderRepo) ListAll(ctx context.Context) ([]domain.Order, error) {
+	// Admin — inclui soft-deleted. UI mostra badge "Deleted" pra deixar óbvio.
 	rows, err := r.db.pool.Query(ctx, `SELECT `+orderCols+`
 		FROM orders ORDER BY created_at DESC LIMIT 200`)
 	if err != nil {
@@ -106,6 +110,55 @@ func (r *OrderRepo) ListAll(ctx context.Context) ([]domain.Order, error) {
 	}
 	defer rows.Close()
 	return scanOrders(rows)
+}
+
+// SoftDeleteOrder marca a order como soft-deleted, grava quem foi o admin
+// que apagou e a razão (opcional). Idempotente — se já estiver deletada,
+// não sobrescreve deleted_at original (audit trail preservado).
+func (r *OrderRepo) SoftDeleteOrder(ctx context.Context, id, adminID, reason string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders
+		   SET deleted_at = COALESCE(deleted_at, NOW()),
+		       deleted_by_admin_id = COALESCE(deleted_by_admin_id, $2),
+		       delete_reason = COALESCE(delete_reason, NULLIF($3, '')),
+		       updated_at = NOW()
+		 WHERE id = $1`, id, adminID, reason)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// HardDeleteOrder remove a linha do DB. Só superadmin. Preserva integridade
+// referencial via ON DELETE CASCADE configurado nas tabelas filhas (tickets,
+// reviews, refunds — confere antes de chamar em prod).
+func (r *OrderRepo) HardDeleteOrder(ctx context.Context, id string) error {
+	tag, err := r.db.pool.Exec(ctx, `DELETE FROM orders WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// RestoreOrder zera o flag de soft-delete (NULL em deleted_at, deleted_by_admin_id
+// e delete_reason). Quem chama: superadmin via UI "Restore". Idempotente.
+func (r *OrderRepo) RestoreOrder(ctx context.Context, id string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE orders SET deleted_at=NULL, deleted_by_admin_id=NULL, delete_reason=NULL,
+		       updated_at=NOW() WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.currency,
@@ -118,6 +171,7 @@ const orderViewCols = `o.id, o.user_id, o.plan_id, o.status, o.amount_cents, o.c
 	o.proof_url, o.proof_uploaded_at, o.proof_status, o.proof_note,
 	o.proof_storage_key,
 	o.created_at, o.updated_at,
+	o.deleted_at, o.deleted_by_admin_id, o.delete_reason,
 	COALESCE(p.name, ''), COALESCE(p.category, ''),
 	COALESCE(u.name, ''), COALESCE(u.email, '')`
 
@@ -217,7 +271,8 @@ func scanOrderRow(row pgx.Row) (*domain.Order, error) {
 		&o.TargetCountryCode,
 		&o.ProofURL, &o.ProofUploadedAt, &o.ProofStatus, &o.ProofNote,
 		&o.ProofStorageKey,
-		&o.CreatedAt, &o.UpdatedAt)
+		&o.CreatedAt, &o.UpdatedAt,
+		&o.DeletedAt, &o.DeletedByAdminID, &o.DeleteReason)
 	if err == nil {
 		o.PaymentExtra = map[string]string{}
 		if len(extra) > 0 {
@@ -258,6 +313,7 @@ func scanOrderViews(rows pgx.Rows) ([]domain.OrderView, error) {
 			&v.ProofURL, &v.ProofUploadedAt, &v.ProofStatus, &v.ProofNote,
 			&v.ProofStorageKey,
 			&v.CreatedAt, &v.UpdatedAt,
+			&v.DeletedAt, &v.DeletedByAdminID, &v.DeleteReason,
 			&v.PlanName, &v.PlanCategory,
 			&v.UserName, &v.UserEmail)
 		if err != nil {

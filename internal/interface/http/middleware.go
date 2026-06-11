@@ -60,6 +60,26 @@ func RequirePermission(perm string) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireSuperadmin é mais estrito que RequirePermission — só passa se o
+// principal for role=superadmin. Usado em operações DESTRUTIVAS (HARD
+// delete de orders/invoices/users) que apagam a row do DB. Soft delete
+// permanece em RequirePermission(PermAdminsManage) — admin comum só
+// flagga, mas a row segue intacta pro superadmin auditar.
+func RequireSuperadmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := principalFromContext(r.Context())
+		if !ok {
+			writeError(w, domain.ErrUnauthorized)
+			return
+		}
+		if p.Role != domain.RoleSuperadmin {
+			writeError(w, domain.ErrForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func principalFromContext(ctx context.Context) (domain.Principal, bool) {
 	p, ok := ctx.Value(principalKey).(domain.Principal)
 	return p, ok

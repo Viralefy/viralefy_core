@@ -16,7 +16,8 @@ func NewInvoiceRepo(db *DB) *InvoiceRepo { return &InvoiceRepo{db: db} }
 const invoiceCols = `id, user_id, amount_cents, currency,
 	display_currency, display_amount, settlement_currency, settlement_amount,
 	status, gateway_id, external_ref, payment_url, payment_extra,
-	created_at, updated_at, paid_at`
+	created_at, updated_at, paid_at,
+	deleted_at, deleted_by_admin_id, delete_reason`
 
 func (r *InvoiceRepo) Create(ctx context.Context, inv domain.Invoice) error {
 	extra, _ := json.Marshal(inv.PaymentExtra)
@@ -45,13 +46,58 @@ func (r *InvoiceRepo) GetByExternalRef(ctx context.Context, ref string) (*domain
 }
 
 func (r *InvoiceRepo) ListByUser(ctx context.Context, userID string) ([]domain.Invoice, error) {
+	// User-facing: esconde soft-deleted (cliente removeu/admin apagou).
 	rows, err := r.db.pool.Query(ctx, `SELECT `+invoiceCols+`
-		FROM invoices WHERE user_id=$1 ORDER BY created_at DESC LIMIT 200`, userID)
+		FROM invoices WHERE user_id=$1 AND deleted_at IS NULL
+		ORDER BY created_at DESC LIMIT 200`, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanInvoices(rows)
+}
+
+// SoftDeleteInvoice / HardDeleteInvoice / RestoreInvoice — vide order_repo.go
+// pra contexto. Mesma semântica idempotente, mesma audit trail.
+func (r *InvoiceRepo) SoftDeleteInvoice(ctx context.Context, id, adminID, reason string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE invoices
+		   SET deleted_at = COALESCE(deleted_at, NOW()),
+		       deleted_by_admin_id = COALESCE(deleted_by_admin_id, $2),
+		       delete_reason = COALESCE(delete_reason, NULLIF($3, '')),
+		       updated_at = NOW()
+		 WHERE id = $1`, id, adminID, reason)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *InvoiceRepo) HardDeleteInvoice(ctx context.Context, id string) error {
+	tag, err := r.db.pool.Exec(ctx, `DELETE FROM invoices WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (r *InvoiceRepo) RestoreInvoice(ctx context.Context, id string) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE invoices SET deleted_at=NULL, deleted_by_admin_id=NULL, delete_reason=NULL,
+		       updated_at=NOW() WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 func (r *InvoiceRepo) ListAll(ctx context.Context, statusFilter string) ([]domain.Invoice, error) {
@@ -126,6 +172,7 @@ func (r *InvoiceRepo) ListAllView(ctx context.Context, statusFilter string) ([]d
 		i.display_currency, i.display_amount, i.settlement_currency, i.settlement_amount,
 		i.status, i.gateway_id, i.external_ref, i.payment_url, i.payment_extra,
 		i.created_at, i.updated_at, i.paid_at,
+		i.deleted_at, i.deleted_by_admin_id, i.delete_reason,
 		COALESCE(u.name, ''), COALESCE(u.email, '')
 		FROM invoices i
 		LEFT JOIN users u ON u.id = i.user_id`
@@ -148,6 +195,7 @@ func (r *InvoiceRepo) ListAllView(ctx context.Context, statusFilter string) ([]d
 			&v.DisplayCurrency, &v.DisplayAmount, &v.SettlementCurrency, &v.SettlementAmount,
 			&v.Status, &v.GatewayID, &v.ExternalRef, &v.PaymentURL, &extra,
 			&v.CreatedAt, &v.UpdatedAt, &v.PaidAt,
+			&v.DeletedAt, &v.DeletedByAdminID, &v.DeleteReason,
 			&v.UserName, &v.UserEmail); err != nil {
 			return nil, err
 		}
@@ -186,7 +234,8 @@ func scanInvoiceRow(row pgx.Row) (*domain.Invoice, error) {
 	err := row.Scan(&inv.ID, &inv.UserID, &inv.AmountCents, &inv.Currency,
 		&inv.DisplayCurrency, &inv.DisplayAmount, &inv.SettlementCurrency, &inv.SettlementAmount,
 		&inv.Status, &inv.GatewayID, &inv.ExternalRef, &inv.PaymentURL, &extra,
-		&inv.CreatedAt, &inv.UpdatedAt, &inv.PaidAt)
+		&inv.CreatedAt, &inv.UpdatedAt, &inv.PaidAt,
+		&inv.DeletedAt, &inv.DeletedByAdminID, &inv.DeleteReason)
 	if err != nil {
 		return &inv, err
 	}

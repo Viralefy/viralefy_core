@@ -101,6 +101,15 @@ func (f *fakeOrderRepoForCron) SetProofStatus(ctx context.Context, orderID, stat
 func (f *fakeOrderRepoForCron) ListPendingProofs(ctx context.Context, limit int) ([]domain.OrderView, error) {
 	return nil, errors.New("not implemented")
 }
+func (f *fakeOrderRepoForCron) SoftDeleteOrder(ctx context.Context, id, adminID, reason string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForCron) HardDeleteOrder(ctx context.Context, id string) error {
+	return errors.New("not implemented")
+}
+func (f *fakeOrderRepoForCron) RestoreOrder(ctx context.Context, id string) error {
+	return errors.New("not implemented")
+}
 
 // ListReadyForDeliveryCapture: replica a query SQL em memória.
 func (f *fakeOrderRepoForCron) ListReadyForDeliveryCapture(ctx context.Context, olderThan time.Time, limit int) ([]domain.Order, error) {
