@@ -231,3 +231,137 @@ func (r *UserEventRepo) UpsertJourney(ctx context.Context, j domain.UserJourney)
 	)
 	return err
 }
+
+// ListRecentVisitors agrupa user_events por visitor_id e ordena por
+// last_seen_at DESC. Junta com users por user_id (LEFT JOIN — visitor anônimo
+// fica com user_email/user_name NULL). Landing path/UTM vêm do primeiro
+// evento gravado pra esse visitor (subquery por ordem ASC).
+//
+// Paginação: LIMIT/OFFSET simples — pra catálogos grandes vamos precisar
+// cursor; por enquanto serve.
+func (r *UserEventRepo) ListRecentVisitors(ctx context.Context, limit, offset int) ([]domain.VisitorSummary, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.pool.Query(ctx, `
+		WITH agg AS (
+			SELECT
+				visitor_id,
+				MAX(user_id)            AS user_id,
+				MIN(occurred_at)        AS first_seen_at,
+				MAX(occurred_at)        AS last_seen_at,
+				COUNT(*)                AS total_events
+			FROM user_events
+			GROUP BY visitor_id
+		),
+		landing AS (
+			SELECT DISTINCT ON (visitor_id)
+				visitor_id, path AS landing_path, utm AS landing_utm
+			FROM user_events
+			ORDER BY visitor_id, occurred_at ASC
+		),
+		lastctx AS (
+			SELECT DISTINCT ON (visitor_id)
+				visitor_id, ip AS last_ip, user_agent AS last_ua
+			FROM user_events
+			ORDER BY visitor_id, occurred_at DESC
+		)
+		SELECT a.visitor_id, a.user_id, u.email, u.name,
+		       a.first_seen_at, a.last_seen_at, a.total_events,
+		       l.landing_path, l.landing_utm,
+		       c.last_ip, c.last_ua
+		  FROM agg a
+		  LEFT JOIN users   u ON u.id = a.user_id
+		  LEFT JOIN landing l ON l.visitor_id = a.visitor_id
+		  LEFT JOIN lastctx c ON c.visitor_id = a.visitor_id
+		 ORDER BY a.last_seen_at DESC
+		 LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.VisitorSummary{}
+	for rows.Next() {
+		v, err := scanVisitorSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *v)
+	}
+	return out, rows.Err()
+}
+
+// GetVisitorSummary devolve o agregado de UM visitor. ErrNotFound quando o
+// visitor não tem nenhum evento.
+func (r *UserEventRepo) GetVisitorSummary(ctx context.Context, visitorID string) (*domain.VisitorSummary, error) {
+	row := r.db.pool.QueryRow(ctx, `
+		WITH agg AS (
+			SELECT
+				visitor_id,
+				MAX(user_id)            AS user_id,
+				MIN(occurred_at)        AS first_seen_at,
+				MAX(occurred_at)        AS last_seen_at,
+				COUNT(*)                AS total_events
+			FROM user_events
+			WHERE visitor_id = $1
+			GROUP BY visitor_id
+		),
+		landing AS (
+			SELECT path AS landing_path, utm AS landing_utm
+			FROM user_events
+			WHERE visitor_id = $1
+			ORDER BY occurred_at ASC
+			LIMIT 1
+		),
+		lastctx AS (
+			SELECT ip AS last_ip, user_agent AS last_ua
+			FROM user_events
+			WHERE visitor_id = $1
+			ORDER BY occurred_at DESC
+			LIMIT 1
+		)
+		SELECT a.visitor_id, a.user_id, u.email, u.name,
+		       a.first_seen_at, a.last_seen_at, a.total_events,
+		       l.landing_path, l.landing_utm,
+		       c.last_ip, c.last_ua
+		  FROM agg a
+		  LEFT JOIN users   u ON u.id = a.user_id
+		  CROSS JOIN landing l
+		  CROSS JOIN lastctx c`,
+		visitorID,
+	)
+	v, err := scanVisitorSummary(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func scanVisitorSummary(row pgx.Row) (*domain.VisitorSummary, error) {
+	var v domain.VisitorSummary
+	var landingUTMJSON []byte
+	err := row.Scan(
+		&v.VisitorID, &v.UserID, &v.UserEmail, &v.UserName,
+		&v.FirstSeenAt, &v.LastSeenAt, &v.TotalEvents,
+		&v.LandingPath, &landingUTMJSON,
+		&v.LastIP, &v.LastUA,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(landingUTMJSON) > 0 {
+		var utm map[string]any
+		if jerr := json.Unmarshal(landingUTMJSON, &utm); jerr == nil {
+			v.LandingUTM = utm
+		}
+	}
+	return &v, nil
+}

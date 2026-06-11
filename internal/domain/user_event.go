@@ -70,6 +70,23 @@ type UserJourney struct {
 	TotalOrders     int            `json:"total_orders"`
 }
 
+// VisitorSummary é o agregado para a listagem de visitors no painel admin.
+// Não é uma tabela — calculamos em query (GROUP BY visitor_id em user_events).
+// Quando o visitor converteu pra user, UserID/UserEmail/UserName aparecem.
+type VisitorSummary struct {
+	VisitorID    string    `json:"visitor_id"`
+	UserID       *string   `json:"user_id,omitempty"`
+	UserEmail    *string   `json:"user_email,omitempty"`
+	UserName     *string   `json:"user_name,omitempty"`
+	FirstSeenAt  time.Time `json:"first_seen_at"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+	TotalEvents  int       `json:"total_events"`
+	LandingPath  *string   `json:"landing_path,omitempty"`
+	LandingUTM   any       `json:"landing_utm,omitempty"`
+	LastIP       *string   `json:"last_ip,omitempty"`
+	LastUA       *string   `json:"last_user_agent,omitempty"`
+}
+
 // UserEventRepository é a porta de saída pra persistência de eventos +
 // journey agregada.
 type UserEventRepository interface {
@@ -84,4 +101,9 @@ type UserEventRepository interface {
 	// UpsertJourney cria ou atualiza o agregado. landing_* só é gravado no
 	// INSERT inicial (first-touch wins via COALESCE no UPDATE).
 	UpsertJourney(ctx context.Context, j UserJourney) error
+	// ListRecentVisitors devolve os visitors agrupados ordenados por
+	// last_seen_at DESC. Usado no painel admin `/analytics/visitors`.
+	ListRecentVisitors(ctx context.Context, limit, offset int) ([]VisitorSummary, error)
+	// GetVisitorSummary devolve o agregado de UM visitor (ou ErrNotFound).
+	GetVisitorSummary(ctx context.Context, visitorID string) (*VisitorSummary, error)
 }

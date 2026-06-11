@@ -2476,6 +2476,85 @@ func (h *Handlers) MeJourney(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// AdminUserJourney — GET /v1/admin/users/{id}/journey
+// Espelha MeJourney mas pra qualquer user lookup-by-id. Devolve journey
+// agregado + últimos 100 eventos (mais alto que MeJourney pra dar contexto
+// completo pro admin investigar).
+func (h *Handlers) AdminUserJourney(w http.ResponseWriter, r *http.Request) {
+	if h.Events == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	journey, err := h.Events.GetJourney(r.Context(), userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	events, err := h.Events.ListByUser(r.Context(), userID, 100)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"journey": journey,
+		"events":  events,
+	})
+}
+
+// AdminListVisitors — GET /v1/admin/visitors?limit=&offset=
+// Lista paginada de visitors agrupados (anônimos + convertidos). Usado pelo
+// painel admin `/analytics/visitors`.
+func (h *Handlers) AdminListVisitors(w http.ResponseWriter, r *http.Request) {
+	if h.Events == nil {
+		writeData(w, http.StatusOK, []any{})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 50
+	}
+	out, err := h.Events.ListRecentVisitors(r.Context(), limit, offset)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, out)
+}
+
+// AdminGetVisitor — GET /v1/admin/visitors/{vid}
+// Devolve o agregado do visitor + últimos 100 eventos.
+func (h *Handlers) AdminGetVisitor(w http.ResponseWriter, r *http.Request) {
+	if h.Events == nil {
+		writeError(w, domain.ErrNotFound)
+		return
+	}
+	vid := chi.URLParam(r, "vid")
+	if vid == "" {
+		writeError(w, domain.ErrInvalidInput)
+		return
+	}
+	summary, err := h.Events.GetVisitorSummary(r.Context(), vid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	events, err := h.Events.ListByVisitor(r.Context(), vid, 100)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"summary": summary,
+		"events":  events,
+	})
+}
+
 // readAnalyticsConsentHeader — lê o header X-Analytics-Consent ("1" / "0").
 // Retorna *bool: nil quando o header é ausente/inválido (caller decide o
 // que fazer — o repo é conservador e NULLifica IP/UA).

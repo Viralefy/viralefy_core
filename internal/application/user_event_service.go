@@ -170,3 +170,20 @@ func (s *UserEventService) GetJourney(ctx context.Context, userID string) (*doma
 	}
 	return j, err
 }
+
+// ListByVisitor exposto pra handler admin de /v1/admin/visitors/{vid}.
+func (s *UserEventService) ListByVisitor(ctx context.Context, visitorID string, limit int) ([]domain.UserEvent, error) {
+	return s.repo.ListByVisitor(ctx, visitorID, limit)
+}
+
+// ListRecentVisitors lista o catálogo de visitors pro painel admin. Limit
+// padrão 50, máximo 500 (defesa no repo).
+func (s *UserEventService) ListRecentVisitors(ctx context.Context, limit, offset int) ([]domain.VisitorSummary, error) {
+	return s.repo.ListRecentVisitors(ctx, limit, offset)
+}
+
+// GetVisitorSummary pro detalhe de um visitor específico. ErrNotFound se
+// não há eventos pra esse id.
+func (s *UserEventService) GetVisitorSummary(ctx context.Context, visitorID string) (*domain.VisitorSummary, error) {
+	return s.repo.GetVisitorSummary(ctx, visitorID)
+}

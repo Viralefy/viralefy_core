@@ -246,6 +246,9 @@ func NewRouter(h *Handlers, corsOrigins []string, ready ReadyChecker, adminAuth,
 			// Usuários, ajuste de saldo e marcação manual de pedido.
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users", h.AdminListUsers)
 			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users/{id}", h.AdminGetUser)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/users/{id}/journey", h.AdminUserJourney)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/visitors", h.AdminListVisitors)
+			r.With(RequirePermission(domain.PermOrdersRead)).Get("/visitors/{vid}", h.AdminGetVisitor)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/users/{id}/credits/adjust", h.AdminAdjustCredits)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/mark-paid", h.AdminMarkOrderPaid)
 			r.With(RequirePermission(domain.PermAdminsManage)).Post("/orders/{id}/proof/decision", h.AdminProofDecision)
