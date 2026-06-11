@@ -94,6 +94,7 @@ func (c *PlanPriceDriftCron) tick(ctx context.Context) {
 	defer rows.Close()
 
 	totalDrift := int64(0)
+	driftedCodes := make([]string, 0, 4)
 	for rows.Next() {
 		var code string
 		var drift int64
@@ -107,6 +108,7 @@ func (c *PlanPriceDriftCron) tick(ctx context.Context) {
 				"currency_code", code,
 				"rows", strconv.FormatInt(drift, 10),
 			)
+			driftedCodes = append(driftedCodes, code)
 		}
 		totalDrift += drift
 	}
@@ -115,5 +117,52 @@ func (c *PlanPriceDriftCron) tick(ctx context.Context) {
 	}
 	if totalDrift == 0 {
 		logger.Info("plan_prices consistent across all currencies")
+		return
+	}
+
+	// Pra cada moeda com drift, busca até 10 plan_ids amostrados pra log —
+	// post-mortem (BTC 2026-06-11) mostrou que SÓ o count não basta: ops gasta
+	// SQL ad-hoc reconstruindo a lista. Causa típica do drift: admin salva
+	// plano pela UI com `prices` no payload contendo valor stale por moeda
+	// (front carregou form antes de currency rate cascade rodar); UpsertPrices
+	// sobrescreve baseline recém-recomputado em PlanService.Update.
+	for _, code := range driftedCodes {
+		c.logDriftSamples(tickCtx, logger, code)
+	}
+}
+
+// logDriftSamples emite até 10 plan_ids da moeda em drift. Read-only, não
+// muta plan_prices — fix é manual (admin re-edita o plano OU força cascade
+// via UpdateRate da moeda).
+func (c *PlanPriceDriftCron) logDriftSamples(ctx context.Context, logger interface {
+	Warn(string, ...any)
+}, code string) {
+	rows, err := c.DB.Pool().Query(ctx, `
+		SELECT pp.plan_id, pp.amount,
+		       ROUND((p.price_cents::numeric / 100.0) * c.rate::numeric, c.decimals) AS expected
+		FROM plan_prices pp
+		JOIN plans p      ON p.id = pp.plan_id
+		JOIN currencies c ON c.code = pp.currency_code
+		WHERE pp.currency_code = $1
+		  AND pp.amount ~ '^[0-9]+(\.[0-9]+)?$'
+		  AND pp.amount::numeric IS DISTINCT FROM
+		      ROUND((p.price_cents::numeric / 100.0) * c.rate::numeric, c.decimals)
+		LIMIT 10`, code)
+	if err != nil {
+		logger.Warn("drift samples query failed", "currency_code", code, "error", err.Error())
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var planID, stored, expected string
+		if err := rows.Scan(&planID, &stored, &expected); err != nil {
+			continue
+		}
+		logger.Warn("plan_prices drift sample",
+			"currency_code", code,
+			"plan_id", planID,
+			"stored", stored,
+			"expected", expected,
+		)
 	}
 }

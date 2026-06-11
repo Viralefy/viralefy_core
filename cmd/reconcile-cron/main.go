@@ -229,6 +229,30 @@ var invariants = []invariant{
 			WHERE max_uses IS NOT NULL AND used_count > max_uses
 			LIMIT ` + sampleLimitStr,
 	},
+	{
+		// Complementa orders_paid_no_external_ref (que pula manual_*).
+		// Em manual_pix o gateway não devolve ref por design — quem garante
+		// que houve pagamento real é o COMPROVANTE anexado pelo cliente em
+		// order_proofs. Sem proof + sem external_ref = pagamento fantasma.
+		// Grace de 24h cobre a janela legítima entre admin marcar paid e o
+		// cliente reanexar/admin re-arquivar; após isso é drift de verdade.
+		// orders.paid_at não existe como coluna (ver order_repo.go ~L331);
+		// updated_at é setado pelo UpdateStatus quando vira 'paid' → proxy ok.
+		name:        "orders_manual_paid_no_proof",
+		severity:    "medium",
+		description: "Orders paid em provider manual_* SEM order_proofs row anexado (>24h após updated_at). Sem comprovante = trilha de auditoria quebrada se houver dispute/chargeback.",
+		query: `
+			SELECT o.id
+			FROM orders o
+			JOIN payment_gateways pg ON pg.id = o.gateway_id
+			LEFT JOIN order_proofs op ON op.order_id = o.id
+			WHERE o.status = 'paid'
+			  AND pg.provider LIKE 'manual_%'
+			  AND op.id IS NULL
+			  AND o.updated_at < NOW() - INTERVAL '24 hours'
+			ORDER BY o.updated_at DESC
+			LIMIT ` + sampleLimitStr,
+	},
 }
 
 // sampleLimitStr é a constante embutida nas queries SQL (fmt.Sprintf

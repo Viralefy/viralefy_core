@@ -821,6 +821,13 @@ func (h *Handlers) AdminDeletePlan(w http.ResponseWriter, r *http.Request) {
 // (IP, user-agent) e dispara o AuditService de forma não-bloqueante. Se
 // AuditService não estiver configurado (HML sem migration), vira no-op.
 func (h *Handlers) logAudit(r *http.Request, action, targetType, targetID string, before, after any) {
+	h.logAuditMeta(r, action, targetType, targetID, before, after, nil)
+}
+
+// logAuditMeta é a versão que aceita metadata adicional além do default (IP,
+// UA, path, method). Usado por ações que precisam carregar contexto pro
+// post-mortem (ex.: AdminMarkPaid grava amount/currency/external_ref).
+func (h *Handlers) logAuditMeta(r *http.Request, action, targetType, targetID string, before, after any, extra map[string]any) {
 	if h.Audit == nil {
 		return
 	}
@@ -830,6 +837,15 @@ func (h *Handlers) logAudit(r *http.Request, action, targetType, targetID string
 		actorType = "admin"
 		actorID = p.AdminID
 	}
+	meta := map[string]any{
+		"ip":         clientIP(r),
+		"user_agent": r.Header.Get("User-Agent"),
+		"path":       r.URL.Path,
+		"method":     r.Method,
+	}
+	for k, v := range extra {
+		meta[k] = v
+	}
 	h.Audit.Log(r.Context(), application.AuditEntry{
 		ActorType:  actorType,
 		ActorID:    actorID,
@@ -838,12 +854,7 @@ func (h *Handlers) logAudit(r *http.Request, action, targetType, targetID string
 		TargetID:   targetID,
 		Before:     before,
 		After:      after,
-		Metadata: map[string]any{
-			"ip":         clientIP(r),
-			"user_agent": r.Header.Get("User-Agent"),
-			"path":       r.URL.Path,
-			"method":     r.Method,
-		},
+		Metadata:   meta,
 	})
 }
 
@@ -1319,11 +1330,46 @@ func (h *Handlers) AdminListInvoices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) AdminMarkInvoicePaid(w http.ResponseWriter, r *http.Request) {
-	inv, err := h.Invoices.AdminMarkPaid(r.Context(), chi.URLParam(r, "id"))
+	id := chi.URLParam(r, "id")
+	// Snapshot do estado anterior pra audit (before). Se a invoice já estava
+	// paga, AdminMarkPaid é no-op idempotente — ainda assim logamos a tentativa
+	// (útil pra rastrear quem clicou "marcar como pago" repetido).
+	before, _ := h.Invoices.AdminGet(r.Context(), id)
+	inv, err := h.Invoices.AdminMarkPaid(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	// Metadata extra pro caso de incidente (ex.: order 450f0e6f) onde precisamos
+	// reconstruir contexto sem caçar nas tabelas. external_ref vazio sinaliza
+	// manual_pix sem comprovante de gateway — pista importante.
+	extRef := ""
+	if inv != nil && inv.ExternalRef != nil {
+		extRef = *inv.ExternalRef
+	}
+	gwID := ""
+	if inv != nil && inv.GatewayID != nil {
+		gwID = *inv.GatewayID
+	}
+	meta := map[string]any{
+		"invoice_id":         id,
+		"user_id":            "",
+		"amount_cents":       int64(0),
+		"currency":           "",
+		"settlement_amount":  int64(0),
+		"settlement_currency": "",
+		"gateway_id":         gwID,
+		"external_ref":       extRef,
+		"was_already_paid":   before != nil && before.Status == domain.InvoiceStatusPaid,
+	}
+	if inv != nil {
+		meta["user_id"] = inv.UserID
+		meta["amount_cents"] = inv.AmountCents
+		meta["currency"] = inv.Currency
+		meta["settlement_amount"] = inv.SettlementAmount
+		meta["settlement_currency"] = inv.SettlementCurrency
+	}
+	h.logAuditMeta(r, "invoice.mark_paid", "invoice", id, before, inv, meta)
 	writeData(w, http.StatusOK, inv)
 }
 
