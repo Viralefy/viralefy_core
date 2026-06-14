@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/Viralefy/viralefy_core/internal/domain"
 )
 
@@ -29,6 +30,17 @@ func writeError(w http.ResponseWriter, err error) {
 	code := "INTERNAL_ERROR"
 	status := http.StatusInternalServerError
 	msg := "internal server error"
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		body := errorBody{}
+		body.Error.Code = "CONFLICT"
+		body.Error.Message = "resource already exists"
+		body.Error.TraceID = trace
+		body.Error.Details = []interface{}{}
+		writeJSON(w, http.StatusConflict, body)
+		return
+	}
 
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
