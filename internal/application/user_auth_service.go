@@ -12,6 +12,16 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// dummyBcryptHash — hash bcrypt cost 12 usado como "alvo" do
+// CompareHashAndPassword quando email não existe, pra equalizar latência com
+// o caminho onde o user existe e bcrypt roda contra o hash real (50-150ms).
+// Sem isso, /v1/auth/user/login retornava ErrUnauthorized em <1ms quando o
+// email não tinha conta — diferença mensurável vira oráculo de enumeração
+// de clientes. Hash gerado UMA vez via bcrypt.GenerateFromPassword com
+// uma senha aleatória que nenhum usuário real vai ter; comparação sempre
+// falha, o que importa é o custo computacional equivalente.
+const dummyBcryptHash = "$2a$12$JhgCM1XUCT7Hezc0L7QsBeMaRdVPt3sFhTp5qi9GN0cOK.gTmA07S"
+
 // RevocationChecker — interface mínima implementada por
 // infrastructure/auth.RevocationCache. Usada como defense-in-depth (camada 2)
 // em ValidateToken: se o jti do token está revogado, rejeita mesmo que
@@ -193,6 +203,11 @@ func (s *UserAuthService) Login(ctx context.Context, email, password string) (*U
 	email = strings.TrimSpace(strings.ToLower(email))
 	u, err := s.users.GetByEmail(ctx, email)
 	if err != nil {
+		// Anti-enum: roda bcrypt fake pra equalizar timing com o caminho
+		// "achou user + senha errada" (paga ~50-150ms de bcrypt cost 12).
+		// Sem isso, atacante diferencia "email existe" de "email não existe"
+		// pelo tempo de resposta.
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(password))
 		return nil, domain.ErrUnauthorized
 	}
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {

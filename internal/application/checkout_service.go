@@ -353,27 +353,57 @@ func (s *CheckoutService) Checkout(ctx context.Context, in CheckoutInput) (*Chec
 
 	// ---------- Caminho A: pagamento com créditos ----------
 	if in.PaymentMethod == "credits" {
-		// Conta + saldo.
-		acct, err := s.credits.Balance(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
-		if acct.BalanceCents < int64(amountCents) {
-			return nil, domain.ErrInvalidInput // saldo insuficiente — front trata
-		}
-		// Pedido já entra como pago (não há cobrança externa).
-		order.Status = domain.OrderStatusPaid
+		// Race fix (SEC-CHK-001): a sequência antiga era Balance() → Create(paid)
+		// → Spend(). Dois requests concorrentes podiam ler o mesmo Balance OK,
+		// ambos criar order=paid, e só um conseguir debitar — o segundo
+		// recebia ErrInvalidInput, mas a order PAID já estava persistida e
+		// entrava em produção sem débito real (entrega grátis).
+		//
+		// Spend (no repo Postgres) já é atômico: usa BEGIN + SELECT FOR UPDATE
+		// + INSERT credit_transactions + UPDATE credit_accounts. Se duas
+		// transações tentam debitar simultaneamente, a segunda só vê o saldo
+		// após o COMMIT da primeira; se ficar negativo, devolve ErrInvalidInput
+		// (saldo insuficiente). Esse é o ÚNICO ponto de check-and-deduct
+		// confiável.
+		//
+		// FK credit_transactions.order_id REFERENCES orders(id) força que a
+		// order exista antes do Spend. Então:
+		//   1. Cria order pending (FK satisfeita, ainda não "vendida")
+		//   2. Spend atômico (única autoridade sobre saldo)
+		//   3. Marca order paid (visível pra fulfillment)
+		// Se Spend falha por saldo insuficiente: cancela a order (não fica
+		// pending órfã) e devolve erro pro cliente.
+		order.Status = domain.OrderStatusPending
 		order.CreditsUsedCents = amountCents
 		if err := s.orders.Create(ctx, order); err != nil {
 			return nil, err
 		}
-		s.redeemCoupon(ctx, couponCodeApplied, orderID, in.Email, couponDiscountUSDCents)
-		s.fireBaselineCapture(orderID)
-		// Debita do ledger (atômico no repo).
 		newAcct, err := s.credits.Spend(ctx, userID, int64(amountCents), "Pedido "+plan.Name, &orderID)
 		if err != nil {
+			// Saldo insuficiente (ou erro do ledger). Marca a order como
+			// cancelled pra não vazar pending órfã pro fulfillment. Best-effort:
+			// se UpdateStatus falhar (DB down etc.), a order pending fica como
+			// rastro auditável — fulfillment NÃO toca em pending, só em paid,
+			// então não há entrega indevida.
+			if uerr := s.orders.UpdateStatus(ctx, orderID, domain.OrderStatusCancelled, nil); uerr != nil {
+				observability.FromContext(ctx).Warn("checkout: cancel after spend fail",
+					"order_id", orderID, "spend_err", err.Error(), "update_err", uerr.Error())
+			}
 			return nil, err
 		}
+		// Spend OK → confirma a order como paga. Se UpdateStatus falhar aqui
+		// (raríssimo: DB blip entre commits), o débito já aconteceu mas o
+		// pedido ficou pending — opera no audit log, NÃO devolvemos erro
+		// (cliente já foi cobrado). Cron de reconciliação pode promover
+		// orders pending com credit_transactions associado.
+		if err := s.orders.UpdateStatus(ctx, orderID, domain.OrderStatusPaid, nil); err != nil {
+			observability.FromContext(ctx).Error("checkout: order pending after spend ok",
+				"order_id", orderID, "error", err.Error())
+		} else {
+			order.Status = domain.OrderStatusPaid
+		}
+		s.redeemCoupon(ctx, couponCodeApplied, orderID, in.Email, couponDiscountUSDCents)
+		s.fireBaselineCapture(orderID)
 		emailSent := s.sendCheckoutEmail(ctx, in.Email, in.Name, *plan, quote, nil, "", nil, generatedPassword, accountCreated, true)
 
 		return &CheckoutResult{
