@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -67,7 +68,10 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrForbidden):
 		code, status, msg = "FORBIDDEN", http.StatusForbidden, "forbidden"
 	case errors.Is(err, domain.ErrConflict):
-		code, status, msg = "CONFLICT", http.StatusConflict, err.Error()
+		// Tira o sufixo ": conflict" quando o err vem de fmt.Errorf("...: %w", ErrConflict).
+		// Fica "email already registered" em vez de "email already registered: conflict".
+		code, status = "CONFLICT", http.StatusConflict
+		msg = strings.TrimSuffix(err.Error(), ": "+domain.ErrConflict.Error())
 	case errors.Is(err, domain.ErrNotImplemented):
 		code, status, msg = "NOT_IMPLEMENTED", http.StatusServiceUnavailable, err.Error()
 	case errors.Is(err, domain.ErrCouponNotFound):
