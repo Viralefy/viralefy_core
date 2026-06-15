@@ -211,6 +211,11 @@ func seedPlans(ctx context.Context, db *DB) error {
 		{"5,000 followers TikTok", "Solid growth", "seguidores_tiktok", "tiktok", "profile", 5000, 120, 50},
 		{"7,500 followers TikTok", "Real audience", "seguidores_tiktok", "tiktok", "profile", 7500, 170, 75},
 		{"10,000 followers TikTok", "TikTok scale", "seguidores_tiktok", "tiktok", "profile", 10000, 200, 100},
+		// BUG-95 (QA round 22): /pricing mostrava "—" pra 25k/50k TikTok followers.
+		// Preços alinhados ao ratio TikTok≈2x IG (10k IG=$100, 10k TikTok=$200):
+		// IG 25k=$200 → TikTok 25k=$400; IG 50k=$350 → TikTok 50k=$700.
+		{"25,000 followers TikTok", "TikTok micro-influencer", "seguidores_tiktok", "tiktok", "profile", 25000, 400, 250},
+		{"50,000 followers TikTok", "TikTok established", "seguidores_tiktok", "tiktok", "profile", 50000, 700, 500},
 
 		// ===== INSTAGRAM LIKES (publication) =====
 		{"100 likes Instagram", "Initial boost", "curtidas_instagram", "instagram", "publication", 100, 1, 1},
@@ -259,6 +264,11 @@ func seedPlans(ctx context.Context, db *DB) error {
 		{"7,500 likes TikTok", "Trending fast", "curtidas_tiktok", "tiktok", "publication", 7500, 56, 75},
 		{"10,000 likes TikTok", "For You page", "curtidas_tiktok", "tiktok", "publication", 10000, 70, 100},
 		{"25,000 likes TikTok", "Hot video", "curtidas_tiktok", "tiktok", "publication", 25000, 160, 250},
+		// BUG-94 (QA round 22): existia em prod com $549.90 / $899.90 — preços
+		// quebrados que vazaram do drift de moeda BRL→USD. Recomputados pelo
+		// mesmo ratio TikTok≈2x IG (IG 50k=$150, 100k=$280 → TikTok $300/$560).
+		{"50,000 likes TikTok", "Top of feed", "curtidas_tiktok", "tiktok", "publication", 50000, 300, 500},
+		{"100,000 likes TikTok", "Explosive", "curtidas_tiktok", "tiktok", "publication", 100000, 560, 1000},
 
 		// ===== TIKTOK COMMENTS (publication) =====
 		{"25 comments TikTok", "Light conversation", "comentarios_tiktok", "tiktok", "publication", 25, 10, 1},
@@ -295,6 +305,13 @@ func seedPlans(ctx context.Context, db *DB) error {
 		{"25,000 Story views Instagram", "Top story reach", "visualizacoes_instagram", "instagram", "profile", 25000, 80, 250},
 
 		// ===== TIKTOK VIEWS (publication) =====
+		// BUG-73 (QA round 22): tiers <10k (500/1k/2.5k/5k) estavam ausentes
+		// no /pricing — usuário pequeno não tinha entrada de catálogo. Adicionados
+		// alinhados ao ratio TikTok views ≈ 1.5x Reels Instagram views.
+		{"500 video views TikTok", "Initial pickup", "visualizacoes_tiktok", "tiktok", "publication", 500, 1.5, 5},
+		{"1,000 video views TikTok", "Solid pickup", "visualizacoes_tiktok", "tiktok", "publication", 1000, 2.5, 10},
+		{"2,500 video views TikTok", "Building", "visualizacoes_tiktok", "tiktok", "publication", 2500, 6, 25},
+		{"5,000 video views TikTok", "Momentum", "visualizacoes_tiktok", "tiktok", "publication", 5000, 11, 50},
 		{"10,000 video views TikTok", "Pickup", "visualizacoes_tiktok", "tiktok", "publication", 10000, 20, 100},
 		{"25,000 video views TikTok", "Building momentum", "visualizacoes_tiktok", "tiktok", "publication", 25000, 45, 250},
 		{"50,000 video views TikTok", "Hot video", "visualizacoes_tiktok", "tiktok", "publication", 50000, 85, 500},
