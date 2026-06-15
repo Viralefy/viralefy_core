@@ -16,6 +16,7 @@ package senderclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -197,6 +198,43 @@ func TestSend_FailedStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "att_X") {
 		t.Errorf("erro deveria conter attempt_id pra correlação: %v", err)
+	}
+}
+
+// TestSend_404MapsToErrNotFound prova que 404 do microserviço vira sentinel
+// ErrNotFound, permitindo errors.Is no caller. Espelha o fix do paymentsclient
+// (round 20): sem o sentinel, o erro vinha como string "HTTP 404" opaca e
+// callers não conseguiam diferenciar 404 (caminho/template inexistente) de
+// 500/503 (sender caiu) — bug que mascara mau-funcionamento em prod.
+func TestSend_404MapsToErrNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"template not registered"}`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-secret")
+	err := c.SendTemplate(context.Background(), "x@x", "missing_template", nil)
+	if err == nil {
+		t.Fatal("esperava erro em 404, recebeu nil")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("erro deveria casar com ErrNotFound via errors.Is, got: %v", err)
+	}
+	// Outros status NÃO devem casar — defense pra evitar mapeamento errado.
+	srv500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"boom"}`)
+	}))
+	defer srv500.Close()
+	c2 := New(srv500.URL, "test-secret")
+	err2 := c2.SendTemplate(context.Background(), "x@x", "t", nil)
+	if err2 == nil {
+		t.Fatal("esperava erro em 500")
+	}
+	if errors.Is(err2, ErrNotFound) {
+		t.Errorf("500 NÃO deveria casar com ErrNotFound, got: %v", err2)
 	}
 }
 

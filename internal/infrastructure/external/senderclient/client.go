@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,6 +36,16 @@ const (
 	channelEmail    = "email"
 	channelTelegram = "telegram"
 )
+
+// ErrNotFound é retornado pelo doJSON quando o microserviço viralefy_sender
+// devolve 404 (path inexistente, template não registrado, telegram_chat
+// resolvido pra alvo inexistente). Pattern espelha paymentsclient (round 20
+// simulated test descobriu 500 genérico mascarando 404 do microservice).
+// Handlers que se importam podem mapear via errors.Is — hoje todos os call
+// sites do core são fire-and-forget e só logam, mas mantemos o sentinel pra
+// consistência do padrão de internal clients e pra abrir caminho a futuro
+// handler que queira diferenciar "template não existe" de "sender caiu".
+var ErrNotFound = errors.New("senderclient: not found")
 
 // Client é o cliente HTTP do viralefy_sender. Stateless.
 type Client struct {
@@ -198,6 +209,12 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// 404 vira sentinel pro caller poder discriminar via errors.Is
+		// (consistência com paymentsclient; round 20 fix).
+		if resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("senderclient: %s %s: %w: %s",
+				method, path, ErrNotFound, truncate(string(respBody), 300))
+		}
 		return fmt.Errorf("senderclient: %s %s: HTTP %d: %s",
 			method, path, resp.StatusCode, truncate(string(respBody), 300))
 	}
