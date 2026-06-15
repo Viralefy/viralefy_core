@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"crypto/rsa"
+	"fmt"
 	"strings"
 	"time"
 
@@ -171,7 +172,9 @@ func (s *UserAuthService) Register(ctx context.Context, in RegisterInput) (*User
 		return nil, domain.ErrInvalidInput
 	}
 	if existing, _ := s.users.GetByEmail(ctx, in.Email); existing != nil {
-		return nil, domain.ErrConflict
+		// Wrap pra preservar errors.Is(domain.ErrConflict) (handler mapeia 409)
+		// mas com mensagem útil pro frontend exibir CTA "Sign in / Recover".
+		return nil, fmt.Errorf("email already registered: %w", domain.ErrConflict)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), 12)
 	if err != nil {
