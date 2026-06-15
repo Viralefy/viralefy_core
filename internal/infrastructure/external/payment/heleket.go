@@ -27,7 +27,7 @@ import (
 //	merchant_id, api_key, base_url (opcional), url_callback (opcional), url_success (opcional)
 type Heleket struct{ client *http.Client }
 
-func NewHeleket() *Heleket { return &Heleket{client: &http.Client{Timeout: 15 * time.Second}} }
+func NewHeleket() *Heleket { return &Heleket{client: DefaultHTTPClient(15 * time.Second)} }
 
 func (Heleket) Provider() string { return "heleket" }
 

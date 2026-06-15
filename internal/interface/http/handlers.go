@@ -1615,6 +1615,21 @@ func (h *Handlers) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 	// já está registrado — evita double-fire de email/ticket. Race entre
 	// duas requests do mesmo event_id é resolvida pelo unique constraint
 	// (uma INSERT vence, a outra cai em conflict e ignora).
+	//
+	// Round 25 HIGH fix: ANTES, qualquer erro no INSERT (incluindo timeout
+	// transitório de DB) caía no caminho "logger.Warn + segue pro
+	// MarkOrderPaid" — comentário antigo dizia "MarkOrderPaid é idempotente
+	// por status guard", mas o status guard é APÓS um SELECT+UPDATE dentro
+	// do PaymentReceiver, e duas execuções concorrentes do mesmo event
+	// ainda podem disparar side effects não-idempotentes (notifs, emails,
+	// crédito). Comportamento correto:
+	//
+	//   - INSERT OK (rows=1)            → segue pro MarkOrderPaid
+	//   - unique_violation (rows=0 OR
+	//     pgErr 23505)                  → ACK 200, NÃO chama MarkOrderPaid
+	//   - qualquer outro erro de DB     → 500, NÃO chama MarkOrderPaid;
+	//                                     Stripe re-entrega e a tentativa
+	//                                     seguinte tenta o INSERT de novo
 	orderID := ev.OrderID()
 	if h.DB != nil {
 		tag, derr := h.DB.Pool().Exec(r.Context(),
@@ -1622,16 +1637,22 @@ func (h *Handlers) StripeWebhook(w http.ResponseWriter, r *http.Request) {
 			 VALUES ($1, $2, NULLIF($3,''))
 			 ON CONFLICT (event_id) DO NOTHING`,
 			ev.ID, ev.Type, orderID)
-		if derr == nil && tag.RowsAffected() == 0 {
-			// Duplicate event — já processado. ACK 200 pra Stripe parar de tentar.
+		decision := classifyStripeIdempotencyResult(tag.RowsAffected(), derr)
+		switch decision {
+		case idempotencyProceed:
+			// segue pro MarkOrderPaid abaixo
+		case idempotencyDuplicate:
 			observability.GatewayCallbacksTotal.WithLabelValues("stripe", "duplicate").Inc()
+			logger.Info("stripe event duplicate", "event_id", ev.ID)
 			w.WriteHeader(http.StatusOK)
 			return
-		}
-		if derr != nil {
-			// Falha de DB no idempotency log — não bloqueia o processamento.
-			// MarkOrderPaid já é idempotente por status guard.
-			logger.Warn("stripe events log insert failed", "error", derr.Error())
+		case idempotencyTransientError:
+			observability.GatewayCallbacksTotal.WithLabelValues("stripe", "idem_log_error").Inc()
+			logger.Error("stripe events log insert failed; refusing to process to avoid double-fire",
+				"event_id", ev.ID, "error", derr.Error())
+			// 500 → Stripe re-entrega; tentativa futura pega o INSERT limpo.
+			writeError(w, errors.New("idempotency log unavailable"))
+			return
 		}
 	}
 	if orderID == "" {

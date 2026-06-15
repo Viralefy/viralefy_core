@@ -21,6 +21,13 @@ func decodeB64(s string) ([]byte, error) {
 	return base64.RawStdEncoding.DecodeString(s)
 }
 
+// BackupCodeCost é o cost factor do bcrypt para os hashes de backup codes
+// de 2FA. Backup codes são senha-equivalentes (1 código = bypass total do
+// segundo fator), então usa o mesmo cost da senha (12). Hashes antigos com
+// cost 10 continuam validando — o cost vive embedded no próprio hash, então
+// só re-enroll/regenerate produz hash com cost 12.
+const BackupCodeCost = 12
+
 // TwoFAService orquestra enroll + verify + consume backup codes.
 // Não conhece "admin vs user" — opera sobre uma TwoFARepository abstrata.
 // Main wire-up cria duas instâncias (uma por tabela).
@@ -60,7 +67,7 @@ func (s *TwoFAService) Enroll(ctx context.Context, principalID, accountLabel str
 	}
 	hashes := make([]string, 0, len(codes))
 	for _, c := range codes {
-		h, err := bcrypt.GenerateFromPassword([]byte(c), 10)
+		h, err := bcrypt.GenerateFromPassword([]byte(c), BackupCodeCost)
 		if err != nil {
 			return nil, err
 		}

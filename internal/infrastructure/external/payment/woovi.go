@@ -23,7 +23,7 @@ import (
 // Authorization com o App ID (AppID é um token JWT-like emitido pela conta).
 type Woovi struct{ client *http.Client }
 
-func NewWoovi() *Woovi { return &Woovi{client: &http.Client{Timeout: 15 * time.Second}} }
+func NewWoovi() *Woovi { return &Woovi{client: DefaultHTTPClient(15 * time.Second)} }
 
 func (Woovi) Provider() string { return "woovi" }
 

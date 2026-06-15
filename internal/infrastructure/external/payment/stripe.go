@@ -46,7 +46,7 @@ type Stripe struct {
 
 func NewStripe(siteURL string) *Stripe {
 	return &Stripe{
-		client:  &http.Client{Timeout: 20 * time.Second},
+		client:  DefaultHTTPClient(20 * time.Second),
 		siteURL: strings.TrimRight(siteURL, "/"),
 	}
 }
