@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/Viralefy/viralefy_core/internal/domain"
 )
@@ -39,6 +40,20 @@ func writeError(w http.ResponseWriter, err error) {
 		body.Error.TraceID = trace
 		body.Error.Details = []interface{}{}
 		writeJSON(w, http.StatusConflict, body)
+		return
+	}
+
+	// pgx.ErrNoRows e canonico em queries que esperam exatamente 1 row e
+	// vem zero. Repos as vezes esquecem de traduzir pra domain.ErrNotFound
+	// (ex.: PublicListPaymentMethods quando o plan UUID nao existe — round
+	// 20 simulated test descobriu 500 onde devia ser 404). Defensivo aqui.
+	if errors.Is(err, pgx.ErrNoRows) {
+		body := errorBody{}
+		body.Error.Code = "NOT_FOUND"
+		body.Error.Message = "resource not found"
+		body.Error.TraceID = trace
+		body.Error.Details = []interface{}{}
+		writeJSON(w, http.StatusNotFound, body)
 		return
 	}
 

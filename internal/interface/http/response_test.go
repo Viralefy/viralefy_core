@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Viralefy/viralefy_core/internal/domain"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -90,6 +91,45 @@ func TestWriteError_DomainNotFound_StillReturns404(t *testing.T) {
 	}
 	if body.Error.TraceID == "" {
 		t.Errorf("expected non-empty trace_id")
+	}
+}
+
+func TestWriteError_PgxErrNoRows_Returns404(t *testing.T) {
+	// Round 20 simulated test descobriu que GET /v1/plans/{id}/payment-methods
+	// retornava 500 quando o UUID era sintaticamente valido mas inexistente.
+	// O repo retornava pgx.ErrNoRows que nao casava em domain.ErrNotFound.
+	// Fix em writeError: detectar pgx.ErrNoRows como NOT_FOUND defensivamente.
+	rec := httptest.NewRecorder()
+
+	writeError(rec, pgx.ErrNoRows)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 for pgx.ErrNoRows, got %d", rec.Code)
+	}
+	body := decodeErrorBody(t, rec)
+	if body.Error.Code != "NOT_FOUND" {
+		t.Errorf("expected error.code NOT_FOUND, got %q", body.Error.Code)
+	}
+	if body.Error.Message != "resource not found" {
+		t.Errorf("expected sanitized message, got %q", body.Error.Message)
+	}
+	if body.Error.TraceID == "" {
+		t.Errorf("expected non-empty trace_id")
+	}
+}
+
+func TestWriteError_WrappedPgxErrNoRows_IsDetected(t *testing.T) {
+	rec := httptest.NewRecorder()
+	wrapped := fmt.Errorf("repo: plan lookup: %w", pgx.ErrNoRows)
+
+	writeError(rec, wrapped)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 for wrapped pgx.ErrNoRows, got %d", rec.Code)
+	}
+	body := decodeErrorBody(t, rec)
+	if body.Error.Code != "NOT_FOUND" {
+		t.Errorf("expected error.code NOT_FOUND, got %q", body.Error.Code)
 	}
 }
 
