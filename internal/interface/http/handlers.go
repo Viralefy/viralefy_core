@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -3130,6 +3131,14 @@ func (h *Handlers) PublicListPaymentMethods(w http.ResponseWriter, r *http.Reque
 			q.Get("country"),
 		)
 		if err != nil {
+			// Plan UUID inexistente: payments microservice retorna 404,
+			// paymentsclient wrappeia em ErrNotFound. Traduzimos pra
+			// domain.ErrNotFound aqui pro writeError emitir 404 no client
+			// final (era 500 generico — round 20 simulated bug).
+			if errors.Is(err, paymentsclient.ErrNotFound) {
+				writeError(w, domain.ErrNotFound)
+				return
+			}
 			writeError(w, err)
 			return
 		}

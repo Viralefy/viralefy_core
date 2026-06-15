@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,6 +34,12 @@ const (
 	defaultTimeout = 30 * time.Second
 	headerToken    = "X-Internal-Token"
 )
+
+// ErrNotFound e retornado pelo doJSON quando o microservico devolve 404.
+// O handler de PublicListPaymentMethods checa via errors.Is e mapeia pra
+// 404 no client final (em vez de propagar como 500 generico).
+// Round 20 simulated test descobriu o bug.
+var ErrNotFound = errors.New("paymentsclient: not found")
 
 // Client é o cliente HTTP do viralefy_payments. Stateless — pode ser
 // compartilhado entre goroutines.
@@ -200,6 +207,15 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Status especificos sao wrapped em sentinels pro handler poder mapear
+		// pra status HTTP do client final (round 20 simulated test descobriu
+		// 500 em /v1/plans/{id}/payment-methods com UUID inexistente —
+		// payments microservice retorna 404 mas o monolito propaga como 500
+		// generico). errors.Is no chamador resolve.
+		if resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("paymentsclient: %s %s: %w: %s",
+				method, path, ErrNotFound, truncate(string(respBody), 300))
+		}
 		return fmt.Errorf("paymentsclient: %s %s: HTTP %d: %s",
 			method, path, resp.StatusCode, truncate(string(respBody), 300))
 	}
