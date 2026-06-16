@@ -150,3 +150,71 @@ func TestWriteError_WrappedPgError_IsDetected(t *testing.T) {
 		t.Errorf("expected sanitized message, got %q", body.Error.Message)
 	}
 }
+
+// Round 28/29: RegisterUser passou a wrap ErrConflict com mensagem útil:
+//   fmt.Errorf("email already registered: %w", domain.ErrConflict)
+// O response.go faz strings.TrimSuffix(": conflict") pra entregar pro
+// frontend uma mensagem limpa "email already registered" — o ApiError
+// no frontend usa code+message pra mostrar CTA "Sign in / Recover".
+//
+// Estes testes trancam o contrato:
+//  1. ErrConflict puro continua mapeando 409 com message="conflict"
+//     (compat com call sites antigos)
+//  2. ErrConflict wrapped retorna 409 com message="email already registered"
+//     (sem sufixo vestigial ": conflict")
+//  3. Wrap mais profundo (várias camadas) ainda trim corretamente
+func TestWriteError_DomainConflict_BareSentinel(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	writeError(rec, domain.ErrConflict)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+	body := decodeErrorBody(t, rec)
+	if body.Error.Code != "CONFLICT" {
+		t.Errorf("expected CONFLICT, got %q", body.Error.Code)
+	}
+	if body.Error.Message != "conflict" {
+		t.Errorf("expected bare 'conflict' for unwrapped sentinel, got %q", body.Error.Message)
+	}
+}
+
+func TestWriteError_DomainConflict_WrappedWithUsefulMessage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	// RegisterUser path
+	wrapped := fmt.Errorf("email already registered: %w", domain.ErrConflict)
+
+	writeError(rec, wrapped)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+	body := decodeErrorBody(t, rec)
+	if body.Error.Code != "CONFLICT" {
+		t.Errorf("expected CONFLICT, got %q", body.Error.Code)
+	}
+	// O frontend (lib/api.ts ApiError) lê este campo. Mudança aqui quebra a UX.
+	if body.Error.Message != "email already registered" {
+		t.Errorf("expected clean message 'email already registered', got %q", body.Error.Message)
+	}
+}
+
+func TestWriteError_DomainConflict_DeeplyWrapped(t *testing.T) {
+	rec := httptest.NewRecorder()
+	// Defesa: se algum repo adicionar mais uma camada antes de retornar.
+	inner := fmt.Errorf("email already registered: %w", domain.ErrConflict)
+	outer := fmt.Errorf("user_auth_service: %w", inner)
+
+	writeError(rec, outer)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", rec.Code)
+	}
+	body := decodeErrorBody(t, rec)
+	// TrimSuffix tira só o ": conflict" final. Camadas extras viram parte
+	// da mensagem — não é ideal pro user mas não vaza o sentinel.
+	if body.Error.Message == "" || body.Error.Message[len(body.Error.Message)-len(": conflict"):] == ": conflict" {
+		t.Errorf("sufixo ': conflict' vazou na mensagem: %q", body.Error.Message)
+	}
+}
