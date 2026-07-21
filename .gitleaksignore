@@ -1,0 +1,5 @@
+# FALSO-POSITIVO: a regra generic-api-key casa com o NOME do parâmetro
+# `legacyHS256Secret` na assinatura de NewAuthService/NewUserAuthService.
+# Não há valor de segredo nessas linhas — só identificador.
+620afc7070d358010c049b2b0c6c6896f5e30989:internal/application/auth_service.go:generic-api-key:45
+620afc7070d358010c049b2b0c6c6896f5e30989:internal/application/user_auth_service.go:generic-api-key:81
