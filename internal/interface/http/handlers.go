@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"github.com/Viralefy/viralefy_core/internal/application"
 	"github.com/Viralefy/viralefy_core/internal/domain"
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/external/email"
@@ -24,6 +22,8 @@ import (
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/external/turnstile"
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/observability"
 	"github.com/Viralefy/viralefy_core/internal/infrastructure/persistence/postgres"
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 type Handlers struct {
@@ -46,15 +46,15 @@ type Handlers struct {
 	// DB é exposto pra middleware de idempotency (lê/escreve em
 	// idempotency_keys). Quase nenhum handler precisa, mas o pattern de
 	// passar via Handlers mantém os middlewares chainable.
-	DB         *postgres.DB
-	Metrics    *application.MetricCaptureService
-	Reviews    *application.ReviewService
-	EmailRepu  *application.EmailReputationService
-	Coupons    *application.CouponService
-	OrderSvc   *application.OrderService
-	Notifs     *application.UserNotifService
-	UserData   *application.UserDataService
-	CountryPPP domain.CountryPPPRepository
+	DB            *postgres.DB
+	Metrics       *application.MetricCaptureService
+	Reviews       *application.ReviewService
+	EmailRepu     *application.EmailReputationService
+	Coupons       *application.CouponService
+	OrderSvc      *application.OrderService
+	Notifs        *application.UserNotifService
+	UserData      *application.UserDataService
+	CountryPPP    domain.CountryPPPRepository
 	Referrals     *application.ReferralService
 	ABTests       *application.ABTestService
 	Fraud         *application.FraudService
@@ -68,11 +68,11 @@ type Handlers struct {
 	Events        *application.UserEventService
 	// Honeypot — repo opcional pra ocultar superadmin de admins normais
 	// + logar tentativas pra superadmin auditar.
-	Honeypot      domain.AdminHoneypotRepository
+	Honeypot domain.AdminHoneypotRepository
 	// Consent — audit log de decisões de cookie consent (LGPD Art. 8 §6).
 	// Quando nil, POST /v1/me/consent vira 503 (best-effort) e o backend
 	// nem expõe a rota (router.go filtra).
-	Consent       *application.UserConsentService
+	Consent *application.UserConsentService
 	// Email sender — usado por handlers que precisam disparar transactional
 	// email fora do fluxo de PaymentReceiver (ex.: AdminProofDecision quando
 	// admin rejeita o comprovante e o cliente precisa ser avisado pra
@@ -626,17 +626,17 @@ func toAdminView(a domain.Admin) adminPublicView {
 //
 // Honeypot policy (2026-06-11):
 //
-//   Quando o caller NÃO é superadmin:
-//     1. Toda row com role=superadmin é MASCARADA pra role="manager"
-//        (camuflagem — admin nem suspeita que tem alguém com mais poder).
-//     2. Qualquer superadmin que esse caller já "shadow-deletou"
-//        (admin_honeypot_log com action='delete') é EXCLUÍDO da resposta
-//        (admin acha que apagou pra valer).
-//     3. Self entry: o admin sempre aparece com a própria role real
-//        (que NÃO é superadmin, então não cai no mascaramento).
+//	Quando o caller NÃO é superadmin:
+//	  1. Toda row com role=superadmin é MASCARADA pra role="manager"
+//	     (camuflagem — admin nem suspeita que tem alguém com mais poder).
+//	  2. Qualquer superadmin que esse caller já "shadow-deletou"
+//	     (admin_honeypot_log com action='delete') é EXCLUÍDO da resposta
+//	     (admin acha que apagou pra valer).
+//	  3. Self entry: o admin sempre aparece com a própria role real
+//	     (que NÃO é superadmin, então não cai no mascaramento).
 //
-//   Quando o caller É superadmin: tudo passa cru — vê todos com role
-//   real, incluindo outros superadmins. Sem mascaramento, sem exclusão.
+//	Quando o caller É superadmin: tudo passa cru — vê todos com role
+//	real, incluindo outros superadmins. Sem mascaramento, sem exclusão.
 func (h *Handlers) AdminListAdmins(w http.ResponseWriter, r *http.Request) {
 	caller, _ := principalFromContext(r.Context())
 	list, err := h.Auth.AdminListAdmins(r.Context())
@@ -735,11 +735,11 @@ func (h *Handlers) AdminCreateAdmin(w http.ResponseWriter, r *http.Request) {
 //
 // Honeypot: quando caller != superadmin tenta editar um superadmin,
 // NÃO retorna 403 (que revelaria a existência da hierarquia). Em vez disso:
-//   1. Grava admin_honeypot_log entry (action='update_role')
-//   2. Retorna 200 com adminPublicView FALSA (role mascarada como
-//      "manager" + nova role do payload aplicada visualmente)
-//   3. Persistência real do role do superadmin NÃO acontece — ele
-//      continua superadmin no DB.
+//  1. Grava admin_honeypot_log entry (action='update_role')
+//  2. Retorna 200 com adminPublicView FALSA (role mascarada como
+//     "manager" + nova role do payload aplicada visualmente)
+//  3. Persistência real do role do superadmin NÃO acontece — ele
+//     continua superadmin no DB.
 //
 // Pro superadmin de verdade que olha o painel, nada muda. Pro admin
 // malicioso, tudo parece ter funcionado.
@@ -1488,15 +1488,15 @@ func (h *Handlers) AdminMarkInvoicePaid(w http.ResponseWriter, r *http.Request) 
 		gwID = *inv.GatewayID
 	}
 	meta := map[string]any{
-		"invoice_id":         id,
-		"user_id":            "",
-		"amount_cents":       int64(0),
-		"currency":           "",
-		"settlement_amount":  int64(0),
+		"invoice_id":          id,
+		"user_id":             "",
+		"amount_cents":        int64(0),
+		"currency":            "",
+		"settlement_amount":   int64(0),
 		"settlement_currency": "",
-		"gateway_id":         gwID,
-		"external_ref":       extRef,
-		"was_already_paid":   before != nil && before.Status == domain.InvoiceStatusPaid,
+		"gateway_id":          gwID,
+		"external_ref":        extRef,
+		"was_already_paid":    before != nil && before.Status == domain.InvoiceStatusPaid,
 	}
 	if inv != nil {
 		meta["user_id"] = inv.UserID
@@ -1713,13 +1713,54 @@ func (h *Handlers) HeleketWebhook(w http.ResponseWriter, r *http.Request) {
 
 // --- Admin: users + credits + orders --- //
 
+// AdminListUsers — GET /v1/admin/users
+//
+// O quê: página de clientes pro backoffice, com saldo de crédito, busca
+//
+//	server-side e cursor pra próxima página.
+//
+// Onde:  única fonte da tabela "Customers" do backoffice.
+// Fluxo: query string (limit/cursor/q/include_test) → UserRepository →
+//
+//	`{data, meta{next_cursor, has_more, total, limit}}`.
+//
+// Efeitos: leitura no Postgres.
+//
+// Antes daqui saía `ListWithCreditBalance(ctx, 200)`: teto fixo de 200 SEM
+// paginação nem aviso — passando disso, o cliente simplesmente não existia pro
+// admin, e a busca só filtrava o que já tinha vindo. Agora o corte é explícito
+// e navegável.
 func (h *Handlers) AdminListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.Users.ListWithCreditBalance(r.Context(), 200)
+	page, err := parsePage(r)
+	if err != nil {
+		writeErrorMsg(w, http.StatusBadRequest, "INVALID_PAGINATION", err.Error())
+		return
+	}
+	// Fixtures de smoke/CI (`@viralefy.test`) ficam fora por default — o painel
+	// lista clientes. `include_test=1` traz de volta pra depuração.
+	includeTest := r.URL.Query().Get("include_test") == "1"
+
+	users, total, err := h.Users.ListPageWithCreditBalance(r.Context(), domain.UserListQuery{
+		Limit:       page.Limit,
+		CursorTime:  page.CursorTime,
+		CursorID:    page.CursorID,
+		Search:      page.Query,
+		IncludeTest: includeTest,
+	})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeData(w, http.StatusOK, users)
+
+	meta := PageMeta{Total: total, Limit: page.Limit}
+	// Página cheia = provavelmente há mais. O cursor aponta pro último item
+	// desta página; a próxima começa estritamente depois dele.
+	if len(users) == page.Limit {
+		last := users[len(users)-1]
+		meta.NextCursor = encodeCursor(last.CreatedAt, last.ID)
+		meta.HasMore = true
+	}
+	writePage(w, users, meta)
 }
 
 func (h *Handlers) AdminGetUser(w http.ResponseWriter, r *http.Request) {
@@ -2543,7 +2584,9 @@ func (h *Handlers) MeCancelSubscription(w http.ResponseWriter, r *http.Request) 
 // PublicTrackEvent — captura evento behavioral.
 // Body: { visitor_id, event_type, path?, referrer?, payload?, utm? }.
 // event_type whitelist: pageview | click | modal_open | modal_close |
-//                        checkout_start | checkout_complete | abandon | landing.
+//
+//	checkout_start | checkout_complete | abandon | landing.
+//
 // Quando há JWT user na request, popula user_id automaticamente (cross-
 // correlate anônimo→autenticado).
 func (h *Handlers) PublicTrackEvent(w http.ResponseWriter, r *http.Request) {
@@ -2649,8 +2692,8 @@ type bulkDeleteRequest struct {
 }
 
 type bulkDeleteResponse struct {
-	Succeeded int                  `json:"succeeded"`
-	Failed    []bulkDeleteFailure  `json:"failed,omitempty"`
+	Succeeded int                 `json:"succeeded"`
+	Failed    []bulkDeleteFailure `json:"failed,omitempty"`
 }
 
 type bulkDeleteFailure struct {
@@ -3064,16 +3107,17 @@ func readAnalyticsConsentHeader(r *http.Request) *bool {
 // base legal é a própria comprovação do consentimento (Art. 8 §6 LGPD).
 //
 // Body:
-//   {
-//     version: number,
-//     necessary: boolean,
-//     preferences: boolean,
-//     analytics: boolean,
-//     marketing: boolean,
-//     timestamp: string (ISO 8601),
-//     source: "accept_all" | "essential_only" | "custom" | "reset",
-//     visitor_id?: string
-//   }
+//
+//	{
+//	  version: number,
+//	  necessary: boolean,
+//	  preferences: boolean,
+//	  analytics: boolean,
+//	  marketing: boolean,
+//	  timestamp: string (ISO 8601),
+//	  source: "accept_all" | "essential_only" | "custom" | "reset",
+//	  visitor_id?: string
+//	}
 //
 // Best-effort: erros internos viram 204 (não quebra UX); validação
 // retorna 400.
@@ -3130,9 +3174,10 @@ func (h *Handlers) PublicRecordConsent(w http.ResponseWriter, r *http.Request) {
 // moeda nativa do gateway). UI usa pra montar a lista de cards no checkout.
 //
 // Query params:
-//   display_currency — preferida do user (BRL/USD/EUR/USDT). Default USD.
-//   country          — código ISO alpha-2 minúsculo do comprador (futuro
-//                      filtro por região; hoje só passa por).
+//
+//	display_currency — preferida do user (BRL/USD/EUR/USDT). Default USD.
+//	country          — código ISO alpha-2 minúsculo do comprador (futuro
+//	                   filtro por região; hoje só passa por).
 func (h *Handlers) PublicListPaymentMethods(w http.ResponseWriter, r *http.Request) {
 	planID := chi.URLParam(r, "id")
 	if planID == "" {

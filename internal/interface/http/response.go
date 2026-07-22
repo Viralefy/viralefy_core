@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Viralefy/viralefy_core/internal/domain"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/Viralefy/viralefy_core/internal/domain"
 )
 
 type errorBody struct {
@@ -96,4 +96,30 @@ func writeError(w http.ResponseWriter, err error) {
 
 func writeData(w http.ResponseWriter, status int, data interface{}) {
 	writeJSON(w, status, map[string]interface{}{"data": data})
+}
+
+// writeErrorMsg responde um erro de BORDA, com código e mensagem escolhidos.
+//
+// O quê: mesmo envelope de writeError (code/message/trace_id/details), mas pra
+//
+//	falha que não vem de um erro de domínio — tipicamente parâmetro
+//	malformado, onde 500 seria mentira e "internal server error" esconderia
+//	do cliente o que ele precisa corrigir.
+//
+// Onde:  handlers que validam query string/params antes de chamar o domínio
+//
+//	(ex.: AdminListUsers com cursor inválido).
+//
+// Entradas: `status` (4xx), `code` (constante em SCREAMING_SNAKE), `msg`
+//
+//	(mensagem segura — nunca eco de input cru nem detalhe interno).
+//
+// Efeitos: escreve na resposta HTTP.
+func writeErrorMsg(w http.ResponseWriter, status int, code, msg string) {
+	body := errorBody{}
+	body.Error.Code = code
+	body.Error.Message = msg
+	body.Error.TraceID = uuid.New().String()
+	body.Error.Details = []interface{}{}
+	writeJSON(w, status, body)
 }

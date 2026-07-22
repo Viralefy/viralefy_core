@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/Viralefy/viralefy_core/internal/domain"
+	"github.com/jackc/pgx/v5"
 )
 
 type UserRepo struct{ db *DB }
@@ -62,13 +64,92 @@ func scanUser(row pgx.Row) (*domain.User, error) {
 	return &u, err
 }
 
-// ListWithCreditBalance — usado pelo backoffice. LEFT JOIN no credit_accounts
-// (saldo 0 quando o usuário ainda não fez recarga).
-func (r *UserRepo) ListWithCreditBalance(ctx context.Context, limit int) ([]domain.UserView, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 200
+// escapeLikePattern neutraliza os curingas de LIKE num termo de busca.
+//
+// O quê: prefixa `\` em `\`, `%` e `_` pra que o termo case literalmente.
+// Onde:  usada por ListPageWithCreditBalance ao montar o ILIKE da busca admin.
+// Entradas: `s` — termo cru digitado pelo admin.
+// Saídas: termo seguro pra interpolar entre `%...%` num LIKE com ESCAPE '\'.
+// Efeitos: nenhum — pura.
+//
+// Ordem importa: a barra é escapada PRIMEIRO, senão as barras que este próprio
+// código insere seriam escapadas de novo.
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	s = strings.ReplaceAll(s, "_", `\_`)
+	return s
+}
+
+// testEmailSuffix é o sufixo reservado de fixtures (TLD `.test`, RFC 2606).
+// Usuário real nunca termina nisso, então serve de filtro seguro pra tirar
+// persona de smoke/CI da lista de clientes.
+const testEmailSuffix = "%@viralefy.test"
+
+// ListPageWithCreditBalance — página de clientes pro backoffice, com saldo.
+//
+// O quê: uma página keyset (created_at, id) DESC, com busca opcional por email
+//
+//	ou nome, mais o total que casa com os mesmos filtros.
+//
+// Onde:  chamada por AdminListUsers (GET /v1/admin/users). É o que alimenta a
+//
+//	tabela de clientes e o contador "N clientes".
+//
+// Fluxo: vem da query string já validada (domain.UserListQuery) → SQL
+//
+//	parametrizado → volta pro handler, que monta o cursor da próxima.
+//
+// Entradas: `q` — Limit (>=1), cursor opcional, Search opcional, IncludeTest.
+// Saídas: itens da página, total (sem cursor), erro de banco.
+// Efeitos: leitura no Postgres (users LEFT JOIN credit_accounts).
+//
+// Keyset e não OFFSET: com OFFSET, um cadastro novo durante a navegação empurra
+// a lista e o admin vê a mesma linha duas vezes (ou pula uma). O par
+// (created_at, id) é estável e ainda usa o índice de created_at.
+func (r *UserRepo) ListPageWithCreditBalance(ctx context.Context, q domain.UserListQuery) ([]domain.UserView, int, error) {
+	if q.Limit <= 0 || q.Limit > 1000 {
+		q.Limit = 200
 	}
-	// Admin path normal — soft-deleted vão pra aba Trash.
+
+	// Filtros compartilhados entre a contagem e a página — montados uma vez pra
+	// que total e itens NUNCA divirjam de critério.
+	where := []string{"u.deleted_at IS NULL"}
+	args := []any{}
+	add := func(clause string, vals ...any) {
+		for i := range vals {
+			clause = strings.Replace(clause, "?", "$"+strconv.Itoa(len(args)+i+1), 1)
+		}
+		args = append(args, vals...)
+		where = append(where, clause)
+	}
+	if !q.IncludeTest {
+		add("u.email NOT LIKE ?", testEmailSuffix)
+	}
+	if q.Search != "" {
+		// O termo vai como PARÂMETRO (nunca concatenado), mas isso sozinho não
+		// basta: `%` e `_` são wildcards do LIKE. Sem escapar, buscar "%"
+		// devolvia a base inteira e "a_b" casava "axb". Escapamos e declaramos
+		// o ESCAPE explicitamente.
+		like := "%" + escapeLikePattern(q.Search) + "%"
+		add(`(u.email ILIKE ? ESCAPE '\' OR u.name ILIKE ? ESCAPE '\')`, like, like)
+	}
+
+	countSQL := "SELECT count(*) FROM users u WHERE " + strings.Join(where, " AND ")
+	var total int
+	if err := r.db.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Predicado keyset só na página (o total é do conjunto inteiro).
+	pageWhere := append([]string{}, where...)
+	pageArgs := append([]any{}, args...)
+	if !q.CursorTime.IsZero() && q.CursorID != "" {
+		pageArgs = append(pageArgs, q.CursorTime, q.CursorID)
+		pageWhere = append(pageWhere, "(u.created_at, u.id) < ($"+strconv.Itoa(len(pageArgs)-1)+", $"+strconv.Itoa(len(pageArgs))+")")
+	}
+	pageArgs = append(pageArgs, q.Limit)
+
 	rows, err := r.db.pool.Query(ctx, `
 		SELECT u.id, u.email, u.name, u.instagram,
 		       COALESCE(u.phone, ''), COALESCE(u.telegram, ''),
@@ -76,10 +157,11 @@ func (r *UserRepo) ListWithCreditBalance(ctx context.Context, limit int) ([]doma
 		       u.deleted_at, u.deleted_by_admin_id, u.delete_reason
 		FROM users u
 		LEFT JOIN credit_accounts c ON c.user_id = u.id
-		WHERE u.deleted_at IS NULL
-		ORDER BY u.created_at DESC LIMIT $1`, limit)
+		WHERE `+strings.Join(pageWhere, " AND ")+`
+		ORDER BY u.created_at DESC, u.id DESC
+		LIMIT $`+strconv.Itoa(len(pageArgs)), pageArgs...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	list := []domain.UserView{}
@@ -87,11 +169,11 @@ func (r *UserRepo) ListWithCreditBalance(ctx context.Context, limit int) ([]doma
 		var v domain.UserView
 		if err := rows.Scan(&v.ID, &v.Email, &v.Name, &v.Instagram, &v.Phone, &v.Telegram, &v.CreatedAt, &v.BalanceCents,
 			&v.DeletedAt, &v.DeletedByAdminID, &v.DeleteReason); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		list = append(list, v)
 	}
-	return list, rows.Err()
+	return list, total, rows.Err()
 }
 
 // ListDeletedWithCreditBalance devolve usuários soft-deleted pra aba Trash
